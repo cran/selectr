@@ -39,3 +39,35 @@ querySelectorAll <- function(doc, selector, ns = NULL, ...) {
         getNodeSet(doc, xpath)
     }
 }
+
+querySelectorNS <- function(doc, selector, ns,
+                            prefix = "descendant-or-self::", ...) {
+    if (missing(ns) || ! length(ns))
+        stop("A namespace must be provided.")
+    ns <- formatNS(ns)
+    prefix <- formatNSPrefix(ns, prefix)
+    querySelector(doc, selector, ns, prefix = prefix, ...)
+}
+
+querySelectorAllNS <- function(doc, selector, ns,
+                               prefix = "descendant-or-self::", ...) {
+    if (missing(ns) || ! length(ns))
+        stop("A namespace must be provided.")
+    ns <- formatNS(ns)
+    prefix <- formatNSPrefix(ns, prefix)
+    querySelectorAll(doc, selector, ns, prefix = prefix, ...)
+}
+
+# Takes a named vector or list and gives a named vector back
+formatNS <- function(ns) {
+    nsNames <- names(ns)
+    ns <- unlist(ns)
+    names(ns) <- nsNames
+    ns
+}
+
+formatNSPrefix <- function(ns, prefix) {
+    filters <- paste0(sprintf("//%s:*", names(ns)), collapse = "|")
+    prefix <- paste0("(", filters, ")/", prefix)
+    prefix
+}

@@ -169,7 +169,7 @@ GenericTranslator <- setRefClass("GenericTranslator",
                      "xpath_checked_pseudo")
         method <- sprintf("xpath_%s_pseudo", gsub("-", "_", pseudo$ident))
         if (! exists(method))
-            stop(sprintf("The pseudo-class :%s is unknown", fn$ident))
+            stop(sprintf("The pseudo-class :%s is unknown", pseudo$ident))
         do.call(method, list(xpath(pseudo$selector)))
     },
     xpath_attrib = function(selector) {
@@ -326,11 +326,7 @@ GenericTranslator <- setRefClass("GenericTranslator",
                          fn$arguments[[1]]$repr()))
         }
         value <- fn$arguments[[1]]$value
-        xpath$add_condition(sprintf(paste0("ancestor-or-self::*[@lang][1][starts-with(concat(",
-                                           "translate(@%s, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', ",
-                                                          "'abcdefghijklmnopqrstuvwxyz'), ",
-                                           "'-'), %s)]", collapse = ""),
-                                    lang_attribute, xpath_literal(paste0(tolower(value), "-"))))
+        xpath$add_condition(sprintf("lang(%s)", xpath_literal(value)))
         xpath
     },
     xpath_root_pseudo = function(xpath) {
@@ -379,7 +375,7 @@ GenericTranslator <- setRefClass("GenericTranslator",
         xpath
     },
     xpath_empty_pseudo = function(xpath) {
-        xpath$add_condition("not(*) and not(normalize-space())")
+        xpath$add_condition("not(*) and not(string-length())")
         xpath
     },
     pseudo_never_matches = function(xpath) {
@@ -484,6 +480,19 @@ HTMLTranslator <- setRefClass("HTMLTranslator",
                    "(@checked ",
                    "and (name(.) = 'input' or name(.) = 'command')",
                    "and (@type = 'checkbox' or @type = 'radio'))"))
+        xpath
+    },
+    xpath_lang_function = function(xpath, fn) {
+        if (! (fn$argument_types() %in% c("STRING", "IDENT"))) {
+            stop(sprintf("Expected a single string or ident for :lang(), got %s",
+                         fn$arguments[[1]]$repr()))
+        }
+        value <- fn$arguments[[1]]$value
+        xpath$add_condition(sprintf(paste0("ancestor-or-self::*[@lang][1][starts-with(concat(",
+                                           "translate(@%s, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', ",
+                                                          "'abcdefghijklmnopqrstuvwxyz'), ",
+                                           "'-'), %s)]", collapse = ""),
+                                    lang_attribute, xpath_literal(paste0(tolower(value), "-"))))
         xpath
     },
     xpath_link_pseudo = function(xpath) {
