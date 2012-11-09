@@ -1,9 +1,9 @@
-fa6e6d86acd0c9cf692c2388db757c9a *DESCRIPTION
+4acfded9847d47736be179d628d2fe92 *DESCRIPTION
 f0a8d11e8bb6f35ef1f676d4ba1dc091 *NAMESPACE
 aee82c4b6280ffcd3f06b10f8b008a35 *R/main.R
 1384caaa7672fd89b832b41be9d785b3 *R/parser.R
 2b106935c1aaaa2e1e53800185cb0e9e *R/xpath.R
-3eb21a2e2daaa20e4910070f26c42bdf *inst/NEWS.Rd
+7a81dc5548a6ea4b787ae4ccc867f737 *inst/NEWS.Rd
 fa833aade81ee10ba96a3b34fb30b115 *inst/tests/test-main.R
 2369916322ccca72a8589396338c7f6a *inst/tests/test-parse-errors.R
 d56ff0cb0a4b7f34d7809b4e4048b3f9 *inst/tests/test-parser.R
@@ -15,7 +15,7 @@ cbb82ec8c1ff2dd01d2548769cc054af *inst/tests/test-quoting.R
 f07c6f8d3c67768af6fba755b69c7de4 *inst/tests/test-shakespeare.R
 ceaed49c843a45830d4ee79688cd8263 *inst/tests/test-specificity.R
 bcaba8bfcebfb611125fe6fed806aa97 *inst/tests/test-tokenizer.R
-162450f3572b8298d3fba45f468a08bd *inst/tests/test-translation.R
+ced121964843cb027ef10dc1806fdc0f *inst/tests/test-translation.R
 9940bd70de80bf36edbded916efb1b20 *man/css_to_xpath.Rd
 7c10ece6a3c0415aa29bf8b29bd0c2ee *man/querySelectorAll.Rd
 2df9f50672be2bdd7c0da8267d5dbefd *tests/test-all.R

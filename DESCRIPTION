@@ -1,8 +1,8 @@
 Package: selectr
 Type: Package
 Title: Translate CSS Selectors to XPath Expressions
-Version: 0.1-0
-Date: 2012-11-07
+Version: 0.1-1
+Date: 2012-11-09
 Authors@R: c(person("Simon", "Potter", role = c("aut", "trl", "cre"),
         email = "simon.potter@auckland.ac.nz"), person("Simon",
         "Sapin", role = "aut"), person("Ian", "Bicking", role = "aut"))
@@ -17,9 +17,9 @@ Description: Translates a CSS3 selector into an equivalent XPath
         Also provided are convenience functions useful for using CSS
         selectors on XML nodes. This package is a port of the Python
         package "cssselect" (http://packages.python.org/cssselect/).
-Packaged: 2012-11-08 00:25:09 UTC; simon
+Packaged: 2012-11-08 21:38:10 UTC; simon
 Author: Simon Potter [aut, trl, cre], Simon Sapin [aut], Ian Bicking
         [aut]
 Maintainer: Simon Potter <simon.potter@auckland.ac.nz>
 Repository: CRAN
-Date/Publication: 2012-11-08 08:03:51
+Date/Publication: 2012-11-09 02:57:01
