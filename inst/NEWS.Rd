@@ -2,6 +2,32 @@
 \title{NEWS file for the selectr package}
 \encoding{UTF-8}
 
+\section{Changes in version 0.2-3}{
+  \subsection{MINOR CHANGES}{
+    \itemize{
+
+      \item Code cleanup contributed by Kun Ren (#1).
+
+      \item Updated DESCRIPTION to include URL and BugReports fields.
+      Also update email address.
+
+    }
+  }
+  \subsection{BUG FIXES}{
+    \itemize{
+
+      \item Fix behaviour for nth-*(an+b) pseudo-class selectors for
+      negative a's. Contributed to cssselect by Paul Tremberth,
+      ported to R.
+
+      \item Escape delimiting characters to support new version of the
+      stringr package. Probably should have been done in the first place.
+      Reported by Hadley Wickham (#5).
+
+    }
+  }
+}
+
 \section{Changes in version 0.2-2}{
   \subsection{MINOR CHANGES}{
     \itemize{
