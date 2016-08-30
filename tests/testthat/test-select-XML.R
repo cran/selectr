@@ -41,10 +41,10 @@ test_that("selection works correctly on a large barrage of tests", {
             items <- getNodeSet(document, xpath)
         }
         n <- length(items)
-        if (! n)
+        if (!n)
             return(NULL)
         result <- character(n)
-        for (i in 1:n) {
+        for (i in seq_len(n)) {
             element <- items[[i]]
             tmp <- xmlAttrs(element)["id"]
             if (is.null(tmp))
@@ -56,11 +56,11 @@ test_that("selection works correctly on a large barrage of tests", {
     
     pcss <- function(main, selectors = NULL, html_only = FALSE) {
         result <- select_ids(main, html_only)
-        if (! is.null(selectors) && length(selectors)) {
+        if (!is.null(selectors) && length(selectors)) {
             n <- length(selectors)
-            for (i in 1:n) {
+            for (i in seq_len(n)) {
                 tmp_res <- select_ids(selectors[i], html_only = html_only)
-                if (! is.null(result) && ! is.null(tmp_res) &&
+                if (!is.null(result) && !is.null(tmp_res) &&
                     tmp_res != result)
                     stop("Difference between results of selectors")
             }
@@ -96,12 +96,13 @@ test_that("selection works correctly on a large barrage of tests", {
     # ... :lang() is not.
     expect_that(pcss(':lang("EN")', '*:lang(en-US)', html_only=TRUE), equals(c('second-li', 'li-div')))
     expect_that(pcss(':lang("e")', html_only=TRUE), equals(NULL))
+    expect_that(pcss('li:nth-child(-n)'), equals(NULL))
+    expect_that(pcss('li:nth-child(n)'), equals(c('first-li', 'second-li', 'third-li', 'fourth-li', 'fifth-li', 'sixth-li', 'seventh-li')))
     expect_that(pcss('li:nth-child(3)'), equals('third-li'))
     expect_that(pcss('li:nth-child(10)'), equals(NULL))
     expect_that(pcss('li:nth-child(2n)', c('li:nth-child(even)', 'li:nth-child(2n+0)')), equals(c('second-li', 'fourth-li', 'sixth-li')))
     expect_that(pcss('li:nth-child(+2n+1)', 'li:nth-child(odd)'), equals(c('first-li', 'third-li', 'fifth-li', 'seventh-li')))
     expect_that(pcss('li:nth-child(2n+4)'), equals(c('fourth-li', 'sixth-li')))
-    ## FIXME: I'm not 100% sure this is right:
     expect_that(pcss('li:nth-child(3n+1)'), equals(c('first-li', 'fourth-li', 'seventh-li')))
     expect_that(pcss('li:nth-child(-n+3)'), equals(c('first-li', 'second-li', 'third-li')))
     expect_that(pcss('li:nth-child(-2n+4)'), equals(c('second-li', 'fourth-li')))

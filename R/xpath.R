@@ -82,7 +82,7 @@ GenericTranslator <- setRefClass("GenericTranslator",
         selectors <- parse(css)
 
         lapply(selectors, function(selector) {
-            if (class(selector) == "Selector" && ! is.null(selector$pseudo_element))
+            if (class(selector) == "Selector" && !is.null(selector$pseudo_element))
                 stop("Pseudo-elements are not supported.")
         })
 
@@ -99,17 +99,17 @@ GenericTranslator <- setRefClass("GenericTranslator",
     selector_to_xpath = function(selector, prefix = "descendant-or-self::") {
         tree <- selector$parsed_tree
         xpath <- .self$xpath(tree)
-        if (! inherits(xpath, "XPathExpr"))
+        if (!inherits(xpath, "XPathExpr"))
             stop("'xpath' is not an instance of 'XPathExpr'")
-        paste0(if (! is.null(prefix)) prefix else "", xpath$str())
+        paste0(if (!is.null(prefix)) prefix else "", xpath$str())
     },
     xpath_literal = function(s) {
-        lenseq <- 1:nchar(s)
+        lenseq <- seq_len(nchar(s))
         split_chars <- substring(s, lenseq, lenseq)
 
-        if (! any(split_chars == "'")) {
+        if (!any(split_chars == "'")) {
             s <- paste0("'", s, "'")
-        } else if (! any(split_chars == '"')) {
+        } else if (!any(split_chars == '"')) {
             s <- paste0('"', s, '"')
         } else {
             dq_inds <- which(split_chars == "'")
@@ -143,7 +143,7 @@ GenericTranslator <- setRefClass("GenericTranslator",
         xpath <- .self$xpath(negation$selector)
         sub_xpath <- .self$xpath(negation$subselector)
         sub_xpath$add_name_test()
-        if (! is.null(sub_xpath$condition) && nchar(sub_xpath$condition)) {
+        if (!is.null(sub_xpath$condition) && nchar(sub_xpath$condition)) {
             xpath$add_condition(sprintf("not(%s)", sub_xpath$condition))
         } else {
             xpath$add_condition("0")
@@ -155,7 +155,7 @@ GenericTranslator <- setRefClass("GenericTranslator",
                      "xpath_nth_child_function", "xpath_nth_last_child_function",
                      "xpath_nth_of_type_function", "xpath_nth_last_of_type_function")
         method <- sprintf("xpath_%s_function", gsub("-", "_", fn$name))
-        if (! exists(method))
+        if (!exists(method))
             stop(sprintf("The pseudo-class :%s() is unknown", fn$name))
         do.call(method, list(xpath(fn$selector), fn))
     },
@@ -170,7 +170,7 @@ GenericTranslator <- setRefClass("GenericTranslator",
                      "xpath_enabled_pseudo", "xpath_disabled_pseudo",
                      "xpath_checked_pseudo")
         method <- sprintf("xpath_%s_pseudo", gsub("-", "_", pseudo$ident))
-        if (! exists(method))
+        if (!exists(method))
             stop(sprintf("The pseudo-class :%s is unknown", pseudo$ident))
         do.call(method, list(xpath(pseudo$selector)))
     },
@@ -187,7 +187,7 @@ GenericTranslator <- setRefClass("GenericTranslator",
             name <- selector$attrib
         }
         safe <- is_safe_name(name)
-        if (! is.null(selector$namespace)) {
+        if (!is.null(selector$namespace)) {
             name <- sprintf("%s:%s", selector$namespace, name)
         }
         if (safe) {
@@ -224,19 +224,19 @@ GenericTranslator <- setRefClass("GenericTranslator",
             if (lower_case_element_names)
                 element <- tolower(element)
         }
-        if (! is.null(selector$namespace)) {
+        if (!is.null(selector$namespace)) {
             # Namespace prefixes are case-sensitive.
             # http://www.w3.org/TR/css3-namespace/#prefixes
             element <- sprintf("%s:%s", selector$namespace, element)
             safe <- safe && is_safe_name(selector$namespace)
         }
         xpath <- XPathExpr$new(element = element)
-        if (! safe)
+        if (!safe)
             xpath$add_name_test()
         xpath
     },
     xpath_descendant_combinator = function(left, right) {
-        left$join("/descendant-or-self::*/", right)
+        left$join("/descendant::", right)
     },
     xpath_child_combinator = function(left, right) {
         left$join("/", right)
@@ -254,97 +254,140 @@ GenericTranslator <- setRefClass("GenericTranslator",
         ab <- parse_series(fn$arguments)
         a <- ab[1]
         b <- ab[2]
-        if (add_name_test) {
-            xpath$add_name_test()
-        }
-        xpath$add_star_prefix()
-        # non-last
-        # --------
-        #    position() = an+b
-        # -> position() - b = an
+
+        # From https://www.w3.org/TR/css3-selectors/#structural-pseudos:
+        #
+        # :nth-child(an+b)
+        #       an+b-1 siblings before
+        #
+        # :nth-last-child(an+b)
+        #       an+b-1 siblings after
+        #
+        # :nth-of-type(an+b)
+        #       an+b-1 siblings with the same expanded element name before
+        #
+        # :nth-last-of-type(an+b)
+        #       an+b-1 siblings with the same expanded element name after
+        #
+        # So,
+        # for :nth-child and :nth-of-type
+        #
+        #    count(preceding-sibling::<nodetest>) = an+b-1
+        #
+        # for :nth-last-child and :nth-last-of-type
+        #
+        #    count(following-sibling::<nodetest>) = an+b-1
+        #
+        # therefore,
+        #    count(...) - (b-1) = 0 (mod a)
+        #
+        # if a == 0:
+        # ~~~~~~~~~~
+        #    count(...) = b-1
         #
         # if a < 0:
-        #    position() - b < 0
-        # -> position() < b
+        # ~~~~~~~~~
+        #    count(...) - b +1 <= 0
+        # -> count(...) <= b-1
         #
-        # last
-        # ----
-        #    last() - position() = an+b -1
-        # -> last() - position() - b +1 = an
-        #
-        # if a < 0:
-        #    last() - position() - b +1 < 0
-        # -> position() > last() - b +1
-        #
-        if (b > 0) {
-            b_neg <- as.character(-b)
-        } else {
-            b_neg <- sprintf("+%s", -b)
-        }
-        if (a == 0) {
-            if (last) {
-                # http://www.w3.org/TR/selectors/#nth-last-child-pseudo
-                # The :nth-last-child(an+b) pseudo-class notation represents
-                # an element that has an+b-1 siblings after it in the document tree
-                #
-                #    last() - position() = an+b-1
-                # -> position() = last() -b +1 (for a==0)
-                #
-                if (b == 1) {
-                    b <- "last()"
-                } else {
-                    b <- sprintf("last() %s +1", b_neg)
-                }
-            }
-            xpath$add_condition(sprintf("position() = %s", b))
+        # if a > 0:
+        # ~~~~~~~~~
+        #    count(...) - b +1 >= 0
+        # -> count(...) >= b-1
+
+        # work with b-1 instead
+        b_min_1 <- b - 1
+
+        # early-exit condition 1:
+        # ~~~~~~~~~~~~~~~~~~~~~~~
+        # for a == 1, nth-*(an+b) means n+b-1 siblings before/after,
+        # and since n %in% {0, 1, 2, ...}, if b-1<=0,
+        # there is always an "n" matching any number of siblings (maybe none)
+        if (a == 1 && b_min_1 <=0) {
             return(xpath)
         }
-        if (a != 1) {
-            if (last) {
-                if (b == 0) {
-                    expr <- sprintf("(last() - position() +1) mod %s = 0", a)
-                } else {
-                    expr <- sprintf("(last() - position() %s +1) mod %s = 0",
-                                    b_neg, a)
-                }
-            } else {
-                if (b == 0) {
-                    expr <- sprintf("position() mod %s = 0", a)
-                } else {
-                    expr <- sprintf("(position() %s) mod %s = 0", b_neg, a)
-                }
+        # early-exit condition 2:
+        # ~~~~~~~~~~~~~~~~~~~~~~~
+        # an+b-1 siblings with a<0 and (b-1)<0 is not possible
+        if (a < 0 && b_min_1 < 0) {
+            xpath$add_condition("0")
+            return(xpath)
+        }
+
+        # `add_name_test` boolean is inverted and somewhat counter-intuitive:
+        #
+        # nth_of_type() calls nth_child(add_name_test=False)
+        if (add_name_test) {
+            nodetest <- "*"
+        } else {
+            nodetest <- sprintf("%s", xpath$element)
+        }
+
+        # count siblings before or after the element
+        if (!last) {
+            siblings_count <- sprintf("count(preceding-sibling::%s)", nodetest)
+        } else {
+            siblings_count <- sprintf("count(following-sibling::%s)", nodetest)
+        }
+
+        # special case of fixed position: nth-*(0n+b)
+        # if a == 0:
+        # ~~~~~~~~~~
+        #    count(***-sibling::***) = b-1
+        if (a == 0) {
+            xpath$add_condition(sprintf("%s = %s", siblings_count, b_min_1))
+            return(xpath)
+        }
+
+        expr <- character(0)
+
+        if (a > 0) {
+            # siblings count, an+b-1, is always >= 0,
+            # so if a>0, and (b-1)<=0, an "n" exists to satisfy this,
+            # therefore, the predicate is only interesting if (b-1)>0
+            if (b_min_1 > 0) {
+                expr <- c(expr, sprintf("%s >= %s", siblings_count, b_min_1))
             }
         } else {
-            expr <- character(0)
+            # if a<0, and (b-1)<0, no "n" satisfies this,
+            # this is tested above as an early exist condition
+            # otherwise,
+            expr <- c(expr, sprintf("%s <= %s", siblings_count, b_min_1))
         }
-        if (last) {
-            tmpop <- if (a > 0) "<=" else ">="
-            if (b == 0) {
-                expr <- c(expr, sprintf("(position() %s last() +1)", tmpop))
-            } else {
-                expr <- c(expr, sprintf("position() %s (last() %s +1)", tmpop, b_neg))
+
+        # operations modulo 1 or -1 are simpler, one only needs to verify:
+        #
+        # - either:
+        # count(***-sibling::***) - (b-1) = n = 0, 1, 2, 3, etc.,
+        #   i.e. count(***-sibling::***) >= (b-1)
+        #
+        # - or:
+        # count(***-sibling::***) - (b-1) = -n = 0, -1, -2, -3, etc.,
+        #   i.e. count(***-sibling::***) <= (b-1)
+        # we we just did above.
+        #
+        if (abs(a) != 1) {
+            # count(***-sibling::***) - (b-1) = 0 (mod a)
+            left <- siblings_count
+
+            # apply "modulo a" on 2nd term, -(b-1),
+            # to simplify things like "(... +6) % -3",
+            # and also make it positive with |a|
+            b_neg <- (-b_min_1) %% abs(a)
+
+            if (b_neg != 0) {
+                b_neg <- sprintf("+%s", b_neg)
+                left <- sprintf("(%s %s)", left, b_neg)
             }
-        } else {
-            tmpop <- if (a > 0) ">=" else "<="
-            if (b > 0) {
-                # position() > 0 so if b < 0, position() > b, always
-                expr <- c(expr, sprintf("position() %s %s", tmpop, b))
-            } else if (b == 0) {
-                expr <- c(expr, "position()")
-            }
+
+            expr <- c(expr, sprintf("%s mod %s = 0", left, a))
         }
-        expr <- paste0(expr, collapse = " and ")
+
         if (length(expr)) {
+            expr <- paste0(expr, collapse = " and ")
             xpath$add_condition(expr)
         }
         xpath
-        # FIXME: handle an+b, odd, even
-        # an+b means every-a, plus b, e.g., 2n+1 means odd
-        # 0n+b means b
-        # n+0 means a=1, i.e., all elements
-        # an means every a elements, i.e., 2n means even
-        # -n means -1n
-        # -1n+6 means elements 6 and previous
     },
     xpath_nth_last_child_function = function(xpath, fn) {
         xpath_nth_child_function(xpath, fn, last = TRUE)
@@ -357,21 +400,21 @@ GenericTranslator <- setRefClass("GenericTranslator",
     },
     xpath_nth_last_of_type_function = function(xpath, fn) {
         if (xpath$element == "*") {
-            stop("*:nth-of-type() is not implemented")
+            stop("*:nth-last-of-type() is not implemented")
         }
         xpath_nth_child_function(xpath, fn, last = TRUE, add_name_test = FALSE)
     },
     xpath_contains_function = function(xpath, fn) {
-        if (! (fn$argument_types() %in% c("STRING", "IDENT"))) {
+        if (!(fn$argument_types() %in% c("STRING", "IDENT"))) {
             stop(sprintf("Expected a single string or ident for :contains(), got %s",
                          paste0("(", paste0(fn$argument_types(), collapse = ", "), ")")))
         }
         value <- fn$arguments[[1]]$value
-        xpath$add_condition(sprintf("contains(string(.), %s)", xpath_literal(value)))
+        xpath$add_condition(sprintf("contains(., %s)", xpath_literal(value)))
         xpath
     },
     xpath_lang_function = function(xpath, fn) {
-        if (! (fn$argument_types() %in% c("STRING", "IDENT"))) {
+        if (!(fn$argument_types() %in% c("STRING", "IDENT"))) {
             stop(sprintf("Expected a single string or ident for :lang(), got %s",
                          fn$arguments[[1]]$repr()))
         }
@@ -384,44 +427,36 @@ GenericTranslator <- setRefClass("GenericTranslator",
         xpath
     },
     xpath_first_child_pseudo = function(xpath) {
-        xpath$add_star_prefix()
-        xpath$add_name_test()
-        xpath$add_condition("position() = 1")
+        xpath$add_condition("count(preceding-sibling::*) = 0")
         xpath
     },
     xpath_last_child_pseudo = function(xpath) {
-        xpath$add_star_prefix()
-        xpath$add_name_test()
-        xpath$add_condition("position() = last()")
+        xpath$add_condition("count(following-sibling::*) = 0")
         xpath
     },
     xpath_first_of_type_pseudo = function(xpath) {
         if (xpath$element == "*") {
             stop("*:first-of-type is not implemented")
         }
-        xpath$add_star_prefix()
-        xpath$add_condition("position() = 1")
+        xpath$add_condition(sprintf("count(preceding-sibling::%s) = 0", xpath$element))
         xpath
     },
     xpath_last_of_type_pseudo = function(xpath) {
         if (xpath$element == "*") {
             stop("*:last-of-type is not implemented")
         }
-        xpath$add_star_prefix()
-        xpath$add_condition("position() = last()")
+        xpath$add_condition(sprintf("count(following-sibling::%s) = 0", xpath$element))
         xpath
     },
     xpath_only_child_pseudo = function(xpath) {
-        xpath$add_name_test()
-        xpath$add_star_prefix()
-        xpath$add_condition('last() = 1')
+        xpath$add_condition("count(parent::*/child::*) = 1")
         xpath
     },
     xpath_only_of_type_pseudo = function(xpath) {
         if (xpath$element == "*") {
             stop("*:only-of-type is not implemented")
         }
-        xpath$add_condition("last() = 1")
+        xpath$add_condition(sprintf("count(parent::*/child::%s) = 1", xpath$element))
         xpath
     },
     xpath_empty_pseudo = function(xpath) {
@@ -453,7 +488,7 @@ GenericTranslator <- setRefClass("GenericTranslator",
         xpath
     },
     xpath_attrib_different = function(xpath, name, value) {
-        if (! is.null(value)) {
+        if (!is.null(value)) {
             xpath$add_condition(sprintf("not(%s) or %s != %s",
                                         name, name, xpath_literal(value)))
         } else {
@@ -463,7 +498,7 @@ GenericTranslator <- setRefClass("GenericTranslator",
         xpath
     },
     xpath_attrib_includes = function(xpath, name, value) {
-        if (! is.null(value) && nzchar(value) &&
+        if (!is.null(value) && nzchar(value) &&
             grepl("^[^ \t\r\n\f]+$", value)) {
             xpath$add_condition(sprintf("%s and contains(concat(' ', normalize-space(%s), ' '), %s)",
                                         name, name, xpath_literal(paste0(" ", value, " "))))
@@ -473,7 +508,7 @@ GenericTranslator <- setRefClass("GenericTranslator",
         xpath
     },
     xpath_attrib_dashmatch = function(xpath, name, value) {
-        if (! is.null(value) && nzchar(value)) {
+        if (!is.null(value) && nzchar(value)) {
             xpath$add_condition(sprintf("%s and (%s = %s or starts-with(%s, %s))",
                                         name, name, xpath_literal(value),
                                         name, xpath_literal(paste0(value, "-"))))
@@ -483,7 +518,7 @@ GenericTranslator <- setRefClass("GenericTranslator",
         xpath
     },
     xpath_attrib_prefixmatch = function(xpath, name, value) {
-        if (! is.null(value) && nzchar(value)) {
+        if (!is.null(value) && nzchar(value)) {
             xpath$add_condition(sprintf("%s and starts-with(%s, %s)",
                                         name, name, xpath_literal(value)))
         } else {
@@ -493,7 +528,7 @@ GenericTranslator <- setRefClass("GenericTranslator",
     },
     # In XPath there is starts-with but not ends-with, hence the oddness
     xpath_attrib_suffixmatch = function(xpath, name, value) {
-        if (! is.null(value) && nzchar(value)) {
+        if (!is.null(value) && nzchar(value)) {
             xpath$add_condition(sprintf("%s and substring(%s, string-length(%s)-%s) = %s",
                                         name, name, name, nchar(value) - 1, xpath_literal(value)))
         } else {
@@ -502,7 +537,7 @@ GenericTranslator <- setRefClass("GenericTranslator",
         xpath
     },
     xpath_attrib_substringmatch = function(xpath, name, value) {
-        if (! is.null(value) && nzchar(value)) {
+        if (!is.null(value) && nzchar(value)) {
             xpath$add_condition(sprintf("%s and contains(%s, %s)",
                                         name, name, xpath_literal(value)))
         } else {
@@ -518,7 +553,7 @@ HTMLTranslator <- setRefClass("HTMLTranslator",
     initialize = function(xhtml = FALSE, ...) {
         callSuper(...)
         xhtml <<- xhtml
-        if (! xhtml) {
+        if (!xhtml) {
             lower_case_element_names <<- TRUE
             lower_case_attribute_names <<- TRUE
         }
@@ -533,7 +568,7 @@ HTMLTranslator <- setRefClass("HTMLTranslator",
         xpath
     },
     xpath_lang_function = function(xpath, fn) {
-        if (! (fn$argument_types() %in% c("STRING", "IDENT"))) {
+        if (!(fn$argument_types() %in% c("STRING", "IDENT"))) {
             stop(sprintf("Expected a single string or ident for :lang(), got %s",
                          fn$arguments[[1]]$repr()))
         }
