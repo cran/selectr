@@ -2,16 +2,47 @@
 \title{NEWS file for the selectr package}
 \encoding{UTF-8}
 
+\section{Changes in version 0.3-1}{
+  \subsection{MINOR CHANGES}{
+     \itemize{
+
+      \item Enabled partial matching on the translator argument to
+      \code{css_to_xpath()}. Instead of defaulting to a generic translator,
+      a non-matching argument will be returned with an error.
+
+      \item Introduced many more unit tests via the \pkg{covr} package.
+      This enabled dead code to be trimmed and also identified areas of code
+      which needed improvement. Minor enhancements include: tolerate
+      whitespace within a \code{:not()}, more consistent results returned
+      from parser methods, improvements to argument parsing.
+
+     }
+  }
+
+  \subsection{BUG FIXES}{
+    \itemize{
+
+      \item The \code{|=} attribute matching operator was not being parsed
+      correctly for the generic translator.
+
+      \item Handle scenario where a CSS comment is unclosed. Results in
+      everything after the comment start to be removed (which may or may
+      not result in a valid selector).
+
+    }
+  }
+}
+
 \section{Changes in version 0.3-0}{
   \subsection{MAJOR CHANGES}{
     \itemize{
 
-      \item Added support for documents from the xml2 package.
+      \item Added support for documents from the \pkg{xml2} package.
 
       \item selectr now also does not strictly depend on the XML
-      package. If either the XML or xml2 packages are present
-      (which are required for the \code{querySelector} methods to
-      work) then \code{querySelector} will begin to work for them.
+      package. If either the \pkg{XML} or \pkg{xml2} packages are
+      present (which are required for the \code{querySelector} methods
+      to work) then \code{querySelector} will begin to work for them.
       This also enables selectr to be used for translation-only.
 
     }
@@ -61,10 +92,10 @@
       use previously, but has now been made more explicit.
 
       \item Removed 'Enhances' field because we import functions from
-      'XML'. This choice is made because 'XML' is a *required* package,
-      rather than an optional package that can be worked with. This and
-      the previous change have been made to keep up with recent changes
-      in R-devel.
+      \pkg{XML}. This choice is made because \pkg{XML} is a required
+      package, rather than an optional package that can be worked with.
+      This and the previous change have been made to keep up with recent
+      changes in R-devel.
 
     }
   }
@@ -77,10 +108,10 @@
       \item Added a 'CITATION' file which cites a technical report on
       the package.
 
-      \item 'show()' methods are now available on internal objects,
+      \item \code{show()} methods are now available on internal objects,
       making interactive extensibility and bug-fixing easier. This is
-      simply wrapping the 'repr()' methods (mirroring the Python source)
-      that the same objects have.
+      simply wrapping the \code{repr()} methods (mirroring the Python
+      source) that the same objects have.
 
     }
   }
@@ -98,8 +129,8 @@
   \subsection{NEW FEATURES}{
     \itemize{
 
-      \item Introduced new functions 'querySelectorNS()' and
-      'querySelectorAllNS()' to ease the use of namespaces within a
+      \item Introduced new functions \code{querySelectorNS()} and
+      \code{querySelectorAllNS()} to ease the use of namespaces within a
       document. Previously this would have required knowledge of XPath.
 
     }
@@ -107,12 +138,12 @@
   \subsection{BUG FIXES}{
     \itemize{
 
-      \item Fix meaning of ':empty', whitespace is not empty.
+      \item Fix meaning of \code{:empty}, whitespace is not empty.
 
-      \item Use 'lang()' for XML documents with the ':lang()' CSS
-      selector.
+      \item Use \code{lang()} for XML documents with the \code{:lang()}
+      CSS selector.
 
-      \item '|ident' no longer produces a parsing error, but is now
+      \item \code{|ident} no longer produces a parsing error, but is now
       equivalent to just 'ident'.
 
     }
@@ -139,12 +170,12 @@
       literally ported, including the test suite.
 
       \item Wrapped translation functionality into a single function,
-      'css_to_xpath()'.
+      \code{css_to_xpath()}.
 
-      \item Created two convenience functions, 'querySelector()' and
-      'querySelectorAll()'. These mirror the behaviour of the same
-      functions present in a web browser. 'querySelector()' returns a
-      node, while 'querySelectorAll()' returns a list of nodes.
+      \item Created two convenience functions, \code{querySelector()} and
+      \code{querySelectorAll()}. These mirror the behaviour of the same
+      functions present in a web browser. \code{querySelector()} returns a
+      node, while \code{querySelectorAll()} returns a list of nodes.
 
     }
   }
