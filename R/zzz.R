@@ -1,77 +1,43 @@
-.selectrEnv <- new.env()
-
-getHasXML <- function() {
-    get("hasXML", envir = .selectrEnv)
-}
-
-setHasXML <- function(hasXML) {
-    assign("hasXML", hasXML, envir = .selectrEnv)
-}
-
-getHasxml2 <- function() {
-    get("hasxml2", envir = .selectrEnv)
-}
-
-setHasxml2 <- function(hasxml2) {
-    assign("hasxml2", hasxml2, envir = .selectrEnv)
-}
-
-hasXMLPackage <- function() {
-    suppressPackageStartupMessages(requireNamespace("XML", quietly = TRUE))
-}
-
-hasxml2Package <- function() {
-    suppressPackageStartupMessages(requireNamespace("xml2", quietly = TRUE))
-}
-
-registerXMLMethods <- function() {
-    registerMethods(c("XMLInternalNode", "XMLInternalDocument"))
-}
-
-registerxml2Methods <- function() {
-    registerMethods("xml_node")
-}
-
-registerMethods <- function(objectNames) {
-    selectrNs <- getNamespace("selectr")
-    for (methodName in .qsMethodNames) {
-        for (objectName in objectNames) {
-            methodImplName <- paste(methodName, objectName, sep = ".")
-            registerS3method(methodName, objectName, methodImplName, envir = selectrNs)
-        }
-    }
-}
-
-.qsMethodNames <- c("querySelector", "querySelectorAll",
-                    "querySelectorNS", "querySelectorAllNS")
-
-# registering at runtime because we don't know if we will have objects
-# available to register methods for.
-# avoids hard dependency on XML or xml2
-tryLoadNamespaces <- function() {
-    hasLoadedXML <- getHasXML()
-    hasLoadedxml2 <- getHasxml2()
-
-    if (hasLoadedXML && hasLoadedxml2)
-        return()
-
-    hasXML <- hasXMLPackage()
-    hasxml2 <- hasxml2Package()
-
-    if (!hasLoadedXML && hasXML)
-        registerXMLMethods()
-
-    if (!hasLoadedxml2 && hasxml2)
-        registerxml2Methods()
-
-    setHasXML(hasLoadedXML || hasXML)
-    setHasxml2(hasLoadedxml2 || hasxml2)
-}
-
-# Not covered as it is only run during a package load.
-# Tested via tryLoadNamespaces anyway.
 .onLoad <- function(libname, pkgname) { # nocov start
-    setHasXML(FALSE)
-    setHasxml2(FALSE)
-    tryLoadNamespaces()
+    reg_s3_method("XML", "querySelector", "XMLInternalNode")
+    reg_s3_method("XML", "querySelectorAll", "XMLInternalNode")
+    reg_s3_method("XML", "querySelectorNS", "XMLInternalNode")
+    reg_s3_method("XML", "querySelectorAllNS", "XMLInternalNode")
+
+    reg_s3_method("XML", "querySelector", "XMLInternalDocument")
+    reg_s3_method("XML", "querySelectorAll", "XMLInternalDocument")
+    reg_s3_method("XML", "querySelectorNS", "XMLInternalDocument")
+    reg_s3_method("XML", "querySelectorAllNS", "XMLInternalDocument")
+
+    reg_s3_method("xml2", "querySelector", "xml_node")
+    reg_s3_method("xml2", "querySelectorAll", "xml_node")
+    reg_s3_method("xml2", "querySelectorNS", "xml_node")
+    reg_s3_method("xml2", "querySelectorAllNS", "xml_node")
+
+    invisible()
+} # nocov end
+
+reg_s3_method <- function(pkg, generic, class, fun = NULL) { # nocov start
+    stopifnot(is.character(pkg), length(pkg) == 1)
+    stopifnot(is.character(generic), length(generic) == 1)
+    stopifnot(is.character(class), length(class) == 1)
+    
+    if (is.null(fun))
+        fun <- get(paste0(generic, ".", class), envir = parent.frame())
+
+    stopifnot(is.function(fun))
+
+    if (pkg %in% loadedNamespaces()) {
+        envir <- asNamespace("selectr")
+        registerS3method(generic, class, fun, envir = envir)
+    }
+
+    # Register hook in case package is later unloaded & reloaded
+    setHook(
+        packageEvent(pkg, "onLoad"),
+        function(...) {
+            envir <- asNamespace("selectr")
+            registerS3method(generic, class, fun, envir = envir)
+        }
+    )
 } # nocov end
