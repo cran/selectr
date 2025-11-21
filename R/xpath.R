@@ -22,10 +22,10 @@ XPathExpr <- R6Class("XPathExpr",
         repr = function() {
             paste0(first_class_name(self), "[", self$str(), "]")
         },
-        add_condition = function(condition) {
+        add_condition = function(condition, conjunction = "and") {
             self$condition <-
                 if (nzchar(self$condition))
-                    paste0(self$condition, " and (", condition, ")")
+                    paste0(self$condition, " ", conjunction, " (", condition, ")")
                 else
                     paste0("(", condition, ")")
         },
@@ -65,6 +65,10 @@ first_class_name <- function(obj) {
 }
 
 xpath_literal <- function(literal) {
+    if (!is.character(literal) || length(literal) != 1) {
+        stop("literal must be a single character string")
+    }
+
     lenseq <- seq_len(nchar(literal))
     split_chars <- substring(literal, lenseq, lenseq)
 
@@ -144,6 +148,12 @@ GenericTranslator <- R6Class("GenericTranslator",
                 self$xpath_combinedselector(parsed_selector)
             else if (method_name == "xpath_element")
                 self$xpath_element(parsed_selector)
+            else if (method_name == "xpath_matching")
+                self$xpath_matching(parsed_selector)
+            else if (method_name == "xpath_where")
+                self$xpath_where(parsed_selector)
+            else if (method_name == "xpath_has")
+                self$xpath_has(parsed_selector)
             else if (method_name == "xpath_function")
                 self$xpath_function(parsed_selector)
             else if (method_name == "xpath_hash")
@@ -175,22 +185,83 @@ GenericTranslator <- R6Class("GenericTranslator",
             else if (combinator == "xpath_indirect_adjacent_combinator")
                 self$xpath_indirect_adjacent_combinator(
                     left = left_xpath, right = right_xpath)
-            else if (combinator == "xpath_indirect_adjacent_combinator")
-                self$xpath_indirect_adjacent_combinator(
-                    left = left_xpath, right = right_xpath)
             else
                 stop("Unknown combinator '",
                      self$combinator_mapping[combined$combinator], "'")
         },
         xpath_negation = function(negation) {
             xpath <- self$xpath(negation$selector)
-            sub_xpath <- self$xpath(negation$subselector)
-            sub_xpath$add_name_test()
-            if (!is.null(sub_xpath$condition) && nzchar(sub_xpath$condition)) {
-                xpath$add_condition(paste0("not(", sub_xpath$condition, ")"))
+
+            # Collect all conditions from the selector list
+            conditions <- character(0)
+            for (subselector in negation$selector_list) {
+                sub_xpath <- self$xpath(subselector)
+                sub_xpath$add_name_test()
+                if (!is.null(sub_xpath$condition) && nzchar(sub_xpath$condition)) {
+                    conditions <- c(conditions, sub_xpath$condition)
+                }
+            }
+
+            # Combine conditions with OR (any match means element is excluded)
+            if (length(conditions) > 0) {
+                combined_condition <- paste0(conditions, collapse = " or ")
+                xpath$add_condition(paste0("not(", combined_condition, ")"))
             } else {
                 xpath$add_condition("0")
             }
+            xpath
+        },
+        xpath_matching = function(matching) {
+            xpath <- self$xpath(matching$selector)
+            exprs <- sapply(matching$selector_list, function(s) self$xpath(s))
+
+            for (e in exprs) {
+                e$add_name_test()
+                if (nzchar(e$condition)) {
+                    xpath$add_condition(e$condition, "or")
+                }
+            }
+
+            xpath
+        },
+        xpath_where = function(where) {
+            # :where() behaves exactly like :is() in terms of matching,
+            # but has zero specificity (handled in the Where class itself)
+            xpath <- self$xpath(where$selector)
+            exprs <- sapply(where$selector_list, function(s) self$xpath(s))
+
+            for (e in exprs) {
+                e$add_name_test()
+                if (nzchar(e$condition)) {
+                    xpath$add_condition(e$condition, "or")
+                }
+            }
+
+            xpath
+        },
+        xpath_has = function(has) {
+            # :has() matches elements that have descendants matching the selector list
+            xpath <- self$xpath(has$selector)
+
+            # Build conditions that check for the existence of descendants
+            conditions <- character(0)
+            for (subselector in has$selector_list) {
+                sub_xpath <- self$xpath(subselector)
+                # Build the full descendant path
+                sub_xpath$add_name_test()
+                desc_test <- paste0(".//", sub_xpath$element)
+                if (nzchar(sub_xpath$condition)) {
+                    desc_test <- paste0(desc_test, "[", sub_xpath$condition, "]")
+                }
+                conditions <- c(conditions, desc_test)
+            }
+
+            # Combine conditions with OR (any descendant match means the element matches)
+            if (length(conditions) > 0) {
+                combined_condition <- paste0(conditions, collapse = " | ")
+                xpath$add_condition(combined_condition)
+            }
+
             xpath
         },
         xpath_function = function(fn) {
@@ -204,6 +275,8 @@ GenericTranslator <- R6Class("GenericTranslator",
                 self$xpath_contains_function(xp, fn)
             else if (method_name == "xpath_lang_function")
                 self$xpath_lang_function(xp, fn)
+            else if (method_name == "xpath_dir_function")
+                self$xpath_dir_function(xp, fn)
             else if (method_name == "xpath_nth_child_function")
                 self$xpath_nth_child_function(xp, fn)
             else if (method_name == "xpath_nth_last_child_function")
@@ -240,6 +313,8 @@ GenericTranslator <- R6Class("GenericTranslator",
                 self$xpath_only_of_type_pseudo(xp)
             else if (method_name == "xpath_empty_pseudo")
                 self$xpath_empty_pseudo(xp)
+            else if (method_name == "xpath_any_link_pseudo")
+                self$xpath_any_link_pseudo(xp)
             else if (method_name == "xpath_link_pseudo")
                 self$xpath_link_pseudo(xp)
             else if (method_name == "xpath_visited_pseudo")
@@ -252,6 +327,10 @@ GenericTranslator <- R6Class("GenericTranslator",
                 self$xpath_focus_pseudo(xp)
             else if (method_name == "xpath_target_pseudo")
                 self$xpath_target_pseudo(xp)
+            else if (method_name == "xpath_target_within_pseudo")
+                self$xpath_target_within_pseudo(xp)
+            else if (method_name == "xpath_local_link_pseudo")
+                self$xpath_local_link_pseudo(xp)
             else if (method_name == "xpath_enabled_pseudo")
                 self$xpath_enabled_pseudo(xp)
             else if (method_name == "xpath_disabled_pseudo")
@@ -329,7 +408,7 @@ GenericTranslator <- R6Class("GenericTranslator",
             }
             if (!is.null(selector$namespace)) {
                 # Namespace prefixes are case-sensitive.
-                # http://www.w3.org/TR/css3-namespace/#prefixes
+                # https://www.w3.org/TR/css-namespaces-3/#prefixes
                 element <- paste0(selector$namespace, ":", element)
                 safe <- safe && is_safe_name(selector$namespace)
             }
@@ -339,15 +418,26 @@ GenericTranslator <- R6Class("GenericTranslator",
             xpath
         },
         xpath_descendant_combinator = function(left, right) {
-            left$join("/descendant::", right)
+            left$join("//", right)
         },
         xpath_child_combinator = function(left, right) {
             left$join("/", right)
         },
         xpath_direct_adjacent_combinator = function(left, right) {
             xpath <- left$join("/following-sibling::", right)
+            target_element <- xpath$element
+            existing_condition <- xpath$condition
             xpath$add_name_test()
-            xpath$add_condition("position() = 1")
+
+            if (nzchar(existing_condition)) {
+                # Has existing conditions from right selector (e.g., attributes)
+                # Result: *[1][self::element][existing_condition]
+                xpath$condition <- paste0("1][self::", target_element, "][", existing_condition)
+            } else {
+                # No existing conditions, just position and element test
+                xpath$condition <- paste0("1][self::", target_element)
+            }
+
             xpath
         },
         xpath_indirect_adjacent_combinator = function(left, right) {
@@ -356,10 +446,21 @@ GenericTranslator <- R6Class("GenericTranslator",
         xpath_nth_child_function = function(xpath, fn, last = FALSE,
                                             add_name_test = TRUE) {
             ab <- parse_series(fn$arguments)
+
+            # Validate that parse_series returned valid results
+            if (is.null(ab) || length(ab) != 2) {
+                stop("Invalid nth-child expression")
+            }
+
             a <- ab[1]
             b <- ab[2]
 
-            # From https://www.w3.org/TR/css3-selectors/#structural-pseudos:
+            # Validate that a and b are valid integers (not NA)
+            if (is.na(a) || is.na(b)) {
+                stop("Invalid nth-child expression: could not parse as valid integers")
+            }
+
+            # From https://www.w3.org/TR/selectors-4/#structural-pseudos:
             #
             # :nth-child(an+b)
             #       an+b-1 siblings before
@@ -372,6 +473,9 @@ GenericTranslator <- R6Class("GenericTranslator",
             #
             # :nth-last-of-type(an+b)
             #       an+b-1 siblings with the same expanded element name after
+            #
+            # CSS Selectors Level 4 adds optional "of S" selector list:
+            # :nth-child(an+b of S) - count only siblings that match selector S
             #
             # So,
             # for :nth-child and :nth-of-type
@@ -407,7 +511,24 @@ GenericTranslator <- R6Class("GenericTranslator",
             # for a == 1, nth-*(an+b) means n+b-1 siblings before/after,
             # and since n %in% {0, 1, 2, ...}, if b-1<=0,
             # there is always an "n" matching any number of siblings (maybe none)
-            if (a == 1 && b_min_1 <=0) {
+            if (a == 1 && b_min_1 <= 0) {
+                # CSS Level 4: When selector list is provided, ensure current element matches
+                if (!is.null(fn$selector_list) && length(fn$selector_list) > 0) {
+                    conditions <- character(0)
+                    for (subselector in fn$selector_list) {
+                        sub_xpath <- self$xpath(subselector)
+                        sub_xpath$add_name_test()
+                        if (!is.null(sub_xpath$condition) && nzchar(sub_xpath$condition)) {
+                            conditions <- c(conditions, sub_xpath$condition)
+                        }
+                    }
+
+                    if (length(conditions) > 0) {
+                        # Current element must match at least one selector (OR)
+                        combined_condition <- paste0(conditions, collapse = " or ")
+                        xpath$add_condition(combined_condition)
+                    }
+                }
                 return(xpath)
             }
             # early-exit condition 2:
@@ -415,6 +536,26 @@ GenericTranslator <- R6Class("GenericTranslator",
             # an+b-1 siblings with a<0 and (b-1)<0 is not possible
             if (a < 0 && b_min_1 < 0) {
                 xpath$add_condition("0")
+
+                # CSS Level 4: When selector list is provided, ensure current element matches
+                # Even though the condition is always false, we should still check the selector
+                if (!is.null(fn$selector_list) && length(fn$selector_list) > 0) {
+                    conditions <- character(0)
+                    for (subselector in fn$selector_list) {
+                        sub_xpath <- self$xpath(subselector)
+                        sub_xpath$add_name_test()
+                        if (!is.null(sub_xpath$condition) && nzchar(sub_xpath$condition)) {
+                            conditions <- c(conditions, sub_xpath$condition)
+                        }
+                    }
+
+                    if (length(conditions) > 0) {
+                        # Current element must match at least one selector (OR)
+                        combined_condition <- paste0(conditions, collapse = " or ")
+                        xpath$add_condition(combined_condition)
+                    }
+                }
+
                 return(xpath)
             }
 
@@ -427,13 +568,33 @@ GenericTranslator <- R6Class("GenericTranslator",
                 nodetest <- xpath$element
             }
 
+            # Build the predicate for selector list filtering (CSS Level 4)
+            selector_predicate <- ""
+            if (!is.null(fn$selector_list) && length(fn$selector_list) > 0) {
+                # Generate XPath conditions for each selector in the list
+                conditions <- character(0)
+                for (subselector in fn$selector_list) {
+                    sub_xpath <- self$xpath(subselector)
+                    sub_xpath$add_name_test()
+                    if (!is.null(sub_xpath$condition) && nzchar(sub_xpath$condition)) {
+                        conditions <- c(conditions, sub_xpath$condition)
+                    }
+                }
+
+                if (length(conditions) > 0) {
+                    # Combine conditions with OR (any match counts the sibling)
+                    combined_condition <- paste0(conditions, collapse = " or ")
+                    selector_predicate <- paste0("[", combined_condition, "]")
+                }
+            }
+
             # count siblings before or after the element
             if (!last) {
                 siblings_count <- paste0("count(preceding-sibling::",
-                                         nodetest, ")")
+                                         nodetest, selector_predicate, ")")
             } else {
                 siblings_count <- paste0("count(following-sibling::",
-                                         nodetest, ")")
+                                         nodetest, selector_predicate, ")")
             }
 
             # special case of fixed position: nth-*(0n+b)
@@ -442,6 +603,25 @@ GenericTranslator <- R6Class("GenericTranslator",
             #    count(***-sibling::***) = b-1
             if (a == 0) {
                 xpath$add_condition(paste0(siblings_count, " = ", b_min_1))
+
+                # CSS Level 4: When selector list is provided, ensure current element matches
+                if (!is.null(fn$selector_list) && length(fn$selector_list) > 0) {
+                    conditions <- character(0)
+                    for (subselector in fn$selector_list) {
+                        sub_xpath <- self$xpath(subselector)
+                        sub_xpath$add_name_test()
+                        if (!is.null(sub_xpath$condition) && nzchar(sub_xpath$condition)) {
+                            conditions <- c(conditions, sub_xpath$condition)
+                        }
+                    }
+
+                    if (length(conditions) > 0) {
+                        # Current element must match at least one selector (OR)
+                        combined_condition <- paste0(conditions, collapse = " or ")
+                        xpath$add_condition(combined_condition)
+                    }
+                }
+
                 return(xpath)
             }
 
@@ -493,6 +673,25 @@ GenericTranslator <- R6Class("GenericTranslator",
                 expr <- paste0(expr, collapse = " and ")
                 xpath$add_condition(expr)
             }
+
+            # CSS Level 4: When selector list is provided, ensure current element matches
+            if (!is.null(fn$selector_list) && length(fn$selector_list) > 0) {
+                conditions <- character(0)
+                for (subselector in fn$selector_list) {
+                    sub_xpath <- self$xpath(subselector)
+                    sub_xpath$add_name_test()
+                    if (!is.null(sub_xpath$condition) && nzchar(sub_xpath$condition)) {
+                        conditions <- c(conditions, sub_xpath$condition)
+                    }
+                }
+
+                if (length(conditions) > 0) {
+                    # Current element must match at least one selector (OR)
+                    combined_condition <- paste0(conditions, collapse = " or ")
+                    xpath$add_condition(combined_condition)
+                }
+            }
+
             xpath
         },
         xpath_nth_last_child_function = function(xpath, fn) {
@@ -522,12 +721,75 @@ GenericTranslator <- R6Class("GenericTranslator",
             xpath
         },
         xpath_lang_function = function(xpath, fn) {
-            if (!(fn$argument_types() %in% c("STRING", "IDENT"))) {
-                stop("Expected a single string or ident for :lang(), got ",
+            # Validate all arguments are STRING, IDENT, or * (DELIM)
+            arg_types <- fn$argument_types()
+            valid_types <- arg_types %in% c("STRING", "IDENT") |
+                          (arg_types == "DELIM" & sapply(fn$arguments, function(a) a$value == "*"))
+            if (!all(valid_types)) {
+                stop("Expected string, ident, or * arguments for :lang(), got ",
                      fn$arguments[[1]]$repr())
             }
-            value <- fn$arguments[[1]]$value
-            xpath$add_condition(paste0("lang(", xpath_literal(value), ")"))
+
+            # Extract language values from arguments, combining IDENT-* patterns
+            lang_values <- character(0)
+            i <- 1
+            while (i <= length(fn$arguments)) {
+                arg <- fn$arguments[[i]]
+                # Check if this is an IDENT ending with '-' followed by a '*' DELIM
+                if (arg$type %in% c("IDENT", "STRING") &&
+                    grepl("-$", arg$value) &&
+                    i < length(fn$arguments) &&
+                    fn$arguments[[i + 1]]$type == "DELIM" &&
+                    fn$arguments[[i + 1]]$value == "*") {
+                    # Combine them: "en-" + "*" = "en-*"
+                    lang_values <- c(lang_values, paste0(arg$value, "*"))
+                    i <- i + 2  # Skip the next token since we combined it
+                } else {
+                    lang_values <- c(lang_values, arg$value)
+                    i <- i + 1
+                }
+            }
+
+            # Build conditions for each language value
+            conditions <- character(0)
+            for (value in lang_values) {
+                if (value == "*") {
+                    # Wildcard * matches everything - use a condition that's always true
+                    conditions <- c(conditions, "true()")
+                } else if (grepl("\\*$", value)) {
+                    # Wildcard suffix like "en-*" - match any language starting with prefix
+                    # Use XPath's lang() function which does prefix matching
+                    prefix <- sub("\\*$", "", value)  # Remove trailing *
+                    conditions <- c(conditions, paste0("lang(", xpath_literal(prefix), ")"))
+                } else {
+                    # Regular language tag
+                    conditions <- c(conditions, paste0("lang(", xpath_literal(value), ")"))
+                }
+            }
+
+            # Combine conditions with OR
+            if (length(conditions) == 1) {
+                xpath$add_condition(conditions[1])
+            } else if (length(conditions) > 1) {
+                combined <- paste0("(", paste(conditions, collapse = " or "), ")")
+                xpath$add_condition(combined)
+            }
+
+            xpath
+        },
+        xpath_dir_function = function(xpath, fn) {
+            # validate all arguments are STRING, IDENT, or * (DELIM)
+            arg_types <- fn$argument_types()
+            valid_types <- arg_types %in% c("STRING", "IDENT") |
+                          (arg_types == "DELIM" & sapply(fn$arguments, function(a) a$value == "*"))
+            if (!all(valid_types)) {
+                stop("Expected string, ident, or * arguments for :dir(), got ",
+                     fn$arguments[[1]]$repr())
+            }
+            # :dir() requires runtime directionality detection based on
+            # document language, inherited dir attributes, and text analysis.
+            # Not possible in static XPath, so we make it never match.
+            xpath$add_condition("0")
             xpath
         },
         xpath_root_pseudo = function(xpath) {
@@ -581,12 +843,15 @@ GenericTranslator <- R6Class("GenericTranslator",
         #},
 
         # All are pseudo_never_matches()
+        xpath_any_link_pseudo = function(xpath) { xpath$add_condition("0") ; xpath },
         xpath_link_pseudo     = function(xpath) { xpath$add_condition("0") ; xpath },
         xpath_visited_pseudo  = function(xpath) { xpath$add_condition("0") ; xpath },
         xpath_hover_pseudo    = function(xpath) { xpath$add_condition("0") ; xpath },
         xpath_active_pseudo   = function(xpath) { xpath$add_condition("0") ; xpath },
         xpath_focus_pseudo    = function(xpath) { xpath$add_condition("0") ; xpath },
         xpath_target_pseudo   = function(xpath) { xpath$add_condition("0") ; xpath },
+        xpath_target_within_pseudo = function(xpath) { xpath$add_condition("0") ; xpath },
+        xpath_local_link_pseudo    = function(xpath) { xpath$add_condition("0") ; xpath },
         xpath_enabled_pseudo  = function(xpath) { xpath$add_condition("0") ; xpath },
         xpath_disabled_pseudo = function(xpath) { xpath$add_condition("0") ; xpath },
         xpath_checked_pseudo  = function(xpath) { xpath$add_condition("0") ; xpath },
@@ -703,19 +968,92 @@ HTMLTranslator <- R6Class("HTMLTranslator",
             xpath
         },
         xpath_lang_function = function(xpath, fn) {
-            if (!(fn$argument_types() %in% c("STRING", "IDENT"))) {
-                stop("Expected a single string or ident for :lang(), got ",
+            # Validate all arguments are STRING, IDENT, or * (DELIM)
+            arg_types <- fn$argument_types()
+            valid_types <- arg_types %in% c("STRING", "IDENT") |
+                          (arg_types == "DELIM" & sapply(fn$arguments, function(a) a$value == "*"))
+            if (!all(valid_types)) {
+                stop("Expected string, ident, or * arguments for :lang(), got ",
                      fn$arguments[[1]]$repr())
             }
-            value <- fn$arguments[[1]]$value
-            xpath$add_condition(paste0(
-                "ancestor-or-self::*[@lang][1][starts-with(concat(",
-                "translate(@",
-                self$lang_attribute,
-                ", 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', ",
-                "'abcdefghijklmnopqrstuvwxyz'), '-'), ",
-                xpath_literal(paste0(tolower(value), "-")),
-                ")]"))
+
+            # Extract language values from arguments, combining IDENT-* patterns
+            lang_values <- character(0)
+            i <- 1
+            while (i <= length(fn$arguments)) {
+                arg <- fn$arguments[[i]]
+                # Check if this is an IDENT ending with '-' followed by a '*' DELIM
+                if (arg$type %in% c("IDENT", "STRING") &&
+                    grepl("-$", arg$value) &&
+                    i < length(fn$arguments) &&
+                    fn$arguments[[i + 1]]$type == "DELIM" &&
+                    fn$arguments[[i + 1]]$value == "*") {
+                    # Combine them: "en-" + "*" = "en-*"
+                    lang_values <- c(lang_values, paste0(arg$value, "*"))
+                    i <- i + 2  # Skip the next token since we combined it
+                } else {
+                    lang_values <- c(lang_values, arg$value)
+                    i <- i + 1
+                }
+            }
+
+            # Build conditions for each language value
+            conditions <- character(0)
+            for (value in lang_values) {
+                if (value == "*") {
+                    # Wildcard * matches any element with a lang attribute
+                    # Check for any ancestor-or-self with @lang attribute
+                    conditions <- c(conditions,
+                        paste0("ancestor-or-self::*[@", self$lang_attribute, "]"))
+                } else if (grepl("\\*$", value)) {
+                    # Wildcard suffix like "en-*" - match any language starting with prefix
+                    prefix <- sub("\\*$", "", value)  # Remove trailing *
+                    # Don't add '-' if prefix already ends with it
+                    search_prefix <- if (grepl("-$", prefix)) tolower(prefix) else paste0(tolower(prefix), "-")
+                    conditions <- c(conditions, paste0(
+                        "ancestor-or-self::*[@", self$lang_attribute, "][1][starts-with(concat(",
+                        "translate(@",
+                        self$lang_attribute,
+                        ", 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', ",
+                        "'abcdefghijklmnopqrstuvwxyz'), '-'), ",
+                        xpath_literal(search_prefix),
+                        ")]"))
+                } else {
+                    # Regular language tag
+                    conditions <- c(conditions, paste0(
+                        "ancestor-or-self::*[@", self$lang_attribute, "][1][starts-with(concat(",
+                        "translate(@",
+                        self$lang_attribute,
+                        ", 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', ",
+                        "'abcdefghijklmnopqrstuvwxyz'), '-'), ",
+                        xpath_literal(paste0(tolower(value), "-")),
+                        ")]"))
+                }
+            }
+
+            # Combine conditions with OR
+            if (length(conditions) == 1) {
+                xpath$add_condition(conditions[1])
+            } else if (length(conditions) > 1) {
+                combined <- paste0("(", paste(conditions, collapse = " or "), ")")
+                xpath$add_condition(combined)
+            }
+
+            xpath
+        },
+        xpath_dir_function = function(xpath, fn) {
+            # Validate all arguments are STRING, IDENT, or * (DELIM)
+            arg_types <- fn$argument_types()
+            valid_types <- arg_types %in% c("STRING", "IDENT") |
+                          (arg_types == "DELIM" & sapply(fn$arguments, function(a) a$value == "*"))
+            if (!all(valid_types)) {
+                stop("Expected string, ident, or * arguments for :dir(), got ",
+                     fn$arguments[[1]]$repr())
+            }
+            # :dir() requires runtime directionality detection based on
+            # document language, inherited dir attributes, and text analysis.
+            # Not possible in static XPath, so we make it never match.
+            xpath$add_condition("0")
             xpath
         },
         xpath_link_pseudo = function(xpath) {

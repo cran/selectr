@@ -69,16 +69,25 @@ Function <- R6Class("Function",
         selector = NULL,
         name = NULL,
         arguments = NULL,
-        initialize = function(selector, name, arguments) {
+        selector_list = NULL,
+        initialize = function(selector, name, arguments, selector_list = NULL) {
             self$selector <- selector
             self$name <- tolower(name)
             self$arguments <- arguments
+            self$selector_list <- selector_list
         },
         repr = function() {
             token_values <- lapply(self$arguments,
                 function(token) paste0("'", token$value, "'"))
             token_values <- paste0(unlist(token_values), collapse = ", ")
             token_values <- paste0("[", token_values, "]")
+            selector_list_repr <- ""
+            if (!is.null(self$selector_list)) {
+                selector_list_repr <- paste0(
+                    " of ",
+                    paste0(sapply(self$selector_list, function(s) s$repr()), collapse = ", ")
+                )
+            }
             paste0(
                 first_class_name(self),
                 "[",
@@ -87,6 +96,7 @@ Function <- R6Class("Function",
                 self$name,
                 "(",
                 token_values,
+                selector_list_repr,
                 ")]")
         },
         argument_types = function() {
@@ -135,10 +145,10 @@ Pseudo <- R6Class("Pseudo",
 Negation <- R6Class("Negation",
     public = list(
         selector = NULL,
-        subselector = NULL,
-        initialize = function(selector, subselector) {
+        selector_list = NULL,
+        initialize = function(selector, selector_list) {
             self$selector <- selector
-            self$subselector <- subselector
+            self$selector_list <- selector_list
         },
         repr = function() {
             paste0(
@@ -146,13 +156,129 @@ Negation <- R6Class("Negation",
                 "[",
                 self$selector$repr(),
                 ":not(",
-                self$subselector$repr(),
+                paste0(
+                    sapply(self$selector_list, function(s) s$repr()),
+                    collapse = ", "
+                ),
                 ")]")
         },
         specificity = function() {
             specs <- self$selector$specificity()
-            sub_specs <- self$subselector$specificity()
-            specs + sub_specs
+            # according to CSS Selectors Level 4, :not() takes the specificity of
+            # its most specific argument
+            sub_specs <- sapply(self$selector_list, function(s) s$specificity())
+            # sapply returns a matrix with each column being a selector's specificity
+            if (is.matrix(sub_specs)) {
+                # get rows as selectors
+                sub_specs <- t(sub_specs)
+                if (nrow(sub_specs) > 1) {
+                    # sort by specificity (id, class, element) descending
+                    sub_specs <- sub_specs[order(-sub_specs[, 1], -sub_specs[, 2], -sub_specs[, 3]), , drop = FALSE]
+                }
+                specs + sub_specs[1, ]
+            } else {
+                # single value case
+                specs + sub_specs
+            }
+        },
+        show = function() { # nocov start
+            cat(self$repr(), "\n")
+        } # nocov end
+    )
+)
+
+Matching <- R6Class("Matching",
+    public = list(
+        selector = NULL,
+        selector_list = NULL,
+        initialize = function(selector, selector_list) {
+            self$selector <- selector
+            self$selector_list <- selector_list
+        },
+        repr = function() {
+            paste0(
+                first_class_name(self),
+                "[",
+                self$selector$repr(),
+                ":is(",
+                paste0(
+                    sapply(self$selector_list, function(s) s$repr()),
+                    collapse = ", "
+                ),
+                ")]"
+            )
+        },
+        specificity = function() {
+            specs <- sapply(self$selector_list, function(s) s$specificity())
+            specs <- t(specs)
+            specs <- specs[order(-specs[, 1], -specs[, 2], -specs[, 3]), ]
+            specs[1, ]
+        },
+        show = function() { # nocov start
+            cat(self$repr(), "\n")
+        } # nocov end
+    )
+)
+
+Where <- R6Class("Where",
+    public = list(
+        selector = NULL,
+        selector_list = NULL,
+        initialize = function(selector, selector_list) {
+            self$selector <- selector
+            self$selector_list <- selector_list
+        },
+        repr = function() {
+            paste0(
+                first_class_name(self),
+                "[",
+                self$selector$repr(),
+                ":where(",
+                paste0(
+                    sapply(self$selector_list, function(s) s$repr()),
+                    collapse = ", "
+                ),
+                ")]"
+            )
+        },
+        specificity = function() {
+            # :where() always has zero specificity
+            self$selector$specificity()
+        },
+        show = function() { # nocov start
+            cat(self$repr(), "\n")
+        } # nocov end
+    )
+)
+
+Has <- R6Class("Has",
+    public = list(
+        selector = NULL,
+        selector_list = NULL,
+        initialize = function(selector, selector_list) {
+            self$selector <- selector
+            self$selector_list <- selector_list
+        },
+        repr = function() {
+            paste0(
+                first_class_name(self),
+                "[",
+                self$selector$repr(),
+                ":has(",
+                paste0(
+                    sapply(self$selector_list, function(s) s$repr()),
+                    collapse = ", "
+                ),
+                ")]"
+            )
+        },
+        specificity = function() {
+            specs <- sapply(self$selector_list, function(s) s$specificity())
+            specs <- t(specs)
+            specs <- specs[order(-specs[, 1], -specs[, 2], -specs[, 3]), ]
+            # Add the maximum specificity from the selector list to the base selector
+            base_specs <- self$selector$specificity()
+            base_specs + specs[1, ]
         },
         show = function() { # nocov start
             cat(self$repr(), "\n")
@@ -306,16 +432,15 @@ CombinedSelector <- R6Class("CombinedSelector",
 #### Parser
 
 # foo
-el_re <- '^[ \t\r\n\f]*([a-zA-Z]+)[ \t\r\n\f]*$'
+el_re <- "^[ \t\r\n\f]*([a-zA-Z]+)[ \t\r\n\f]*$"
 
 # foo#bar or #bar
-id_re <- '^[ \t\r\n\f]*([a-zA-Z]*)#([a-zA-Z0-9_-]+)[ \t\r\n\f]*$'
+id_re <- "^[ \t\r\n\f]*([a-zA-Z]*)#([a-zA-Z0-9_-]+)[ \t\r\n\f]*$"
 
 # foo.bar or .bar
-class_re <- '^[ \t\r\n\f]*([a-zA-Z]*)\\.([a-zA-Z][a-zA-Z0-9_-]*)[ \t\r\n\f]*$'
+class_re <- "^[ \t\r\n\f]*([a-zA-Z]*)\\.([a-zA-Z][a-zA-Z0-9_-]*)[ \t\r\n\f]*$"
 
 parse <- function(css) {
-    nc <- nchar(css)
     el_match <- str_match(css, el_re)[1, 2]
     if (!is.na(el_match))
         return(list(Selector$new(Element$new(element = el_match))))
@@ -334,7 +459,7 @@ parse <- function(css) {
                         ClassSelector$new(
                             Element$new(
                                 element =
-                                    if (is.na(class_match[2])) NULL
+                                    if (is.null(class_match[2]) || is.na(class_match[2])) NULL
                                     else class_match[2]),
                             class_match[3]))))
     stream <- TokenStream$new(tokenize(css))
@@ -397,7 +522,7 @@ parse_selector <- function(stream) {
         } else {
             # By exclusion, the last parse_simple_selector() ended
             # at peek == ' '
-            combinator <- ' '
+            combinator <- " "
         }
         stuff <- parse_simple_selector(stream)
         pseudo_element <- stuff$pseudo_element
@@ -479,33 +604,54 @@ parse_simple_selector <- function(stream, inside_negation = FALSE) {
                 if (inside_negation) {
                     stop("Got nested :not()")
                 }
-                res <- parse_simple_selector(stream, inside_negation = TRUE)
-                argument <- res$result
-                argument_pseudo_element <- res$pseudo_element
-                stream$skip_whitespace()
-                nt <- stream$nxt()
-                if (length(argument_pseudo_element) &&
-                    nzchar(argument_pseudo_element)) {
-                    stop("Got pseudo-element ::",
-                         argument_pseudo_element,
-                         " inside :not() at ",
-                         nt$pos)
-                }
-                if (!token_equality(nt, "DELIM", ")")) {
-                    stop("Expected ')', got ", nt$value)
-                }
-                result <- Negation$new(result, argument)
+                selectors <- parse_simple_selector_arguments(stream, "not")
+                result <- Negation$new(result, selectors)
+            } else if (any(tolower(ident) == c("matches", "is"))) {
+                selectors <- parse_simple_selector_arguments(stream, tolower(ident))
+                result <- Matching$new(result, selectors)
+            } else if (tolower(ident) == "where") {
+                selectors <- parse_simple_selector_arguments(stream, "where")
+                result <- Where$new(result, selectors)
+            } else if (tolower(ident) == "has") {
+                selectors <- parse_simple_selector_arguments(stream, "has")
+                result <- Has$new(result, selectors)
             } else {
                 arguments <- list()
+                selector_list <- NULL
                 i <- 1
+
+                # Parse the function arguments (e.g., "2n+1" for nth-child)
+                # :lang() and :dir() can accept comma-separated lists
+                allow_commas <- tolower(ident) %in% c("lang", "dir")
+
                 while (TRUE) {
                     nt <- stream$nxt()
                     if (nt$type %in% c("IDENT", "STRING", "NUMBER") ||
-                        (token_equality(nt ,"DELIM", "+") ||
+                        (token_equality(nt, "DELIM", "+") ||
                          token_equality(nt, "DELIM", "-"))) {
                         arguments[[i]] <- nt
                         i <- i + 1
+
+                        # Check if this is the 'of' keyword for nth-child/nth-last-child
+                        if (nt$type == "IDENT" && tolower(nt$value) == "of" &&
+                            any(tolower(ident) == c("nth-child", "nth-last-child"))) {
+                            # Remove 'of' from arguments - it's a keyword, not an argument
+                            arguments <- arguments[-length(arguments)]
+
+                            # Parse the selector list that follows 'of'
+                            stream$skip_whitespace()
+                            selector_list <- parse_simple_selector_arguments(stream, ident)
+                            break
+                        }
+                    } else if (token_equality(nt, "DELIM", "*") && allow_commas) {
+                        # For :lang() and :dir(), allow * as a wildcard
+                        arguments[[i]] <- nt
+                        i <- i + 1
                     } else if (nt$type == "S") {
+                        next
+                    } else if (token_equality(nt, "DELIM", ",") && allow_commas) {
+                        # For :lang() and :dir(), commas separate multiple values
+                        stream$skip_whitespace()
                         next
                     } else if (token_equality(nt, "DELIM", ")")) {
                         break
@@ -513,10 +659,12 @@ parse_simple_selector <- function(stream, inside_negation = FALSE) {
                         stop("Expected an argument, got ", nt$repr())
                     }
                 }
+
                 if (length(arguments) == 0) {
                     stop("Expected at least one argument, got ", nt$repr())
                 }
-                result <- Function$new(result, ident, arguments)
+
+                result <- Function$new(result, ident, arguments, selector_list)
             }
         } else {
             stop("Expected selector, got ", stream$peek()$repr())
@@ -526,6 +674,48 @@ parse_simple_selector <- function(stream, inside_negation = FALSE) {
         stop("Expected selector, got ", stream$peek()$repr())
     }
     list(result = result, pseudo_element = pseudo_element)
+}
+
+parse_simple_selector_arguments <- function(stream, function_name = NULL) { # nolint: object_length_linter.
+    index <- 1
+    arguments <- list()
+
+    while (TRUE) {
+        results <- parse_simple_selector(stream, inside_negation = TRUE)
+        result <- results$result
+        pseudo_element <- results$pseudo_element
+
+        if (!is.null(pseudo_element)) {
+            if (!is.null(function_name)) {
+                stop("Got pseudo-element ::", pseudo_element, " inside :", function_name, "() at ", stream$peeked$pos)
+            } else {
+                stop("Got pseudo-element ::", pseudo_element, " inside function")
+            }
+        }
+
+        arguments[[index]] <- result
+        index <- index + 1
+
+        stream$skip_whitespace()
+        nt <- stream$nxt()
+
+        if (token_equality(nt, "DELIM", ")")) {
+            break
+        } else if (token_equality(nt, "DELIM", ",")) {
+            stream$skip_whitespace()
+            # Check if there's actually a selector after the comma
+            peek <- stream$peek()
+            if (token_equality(peek, "DELIM", ")")) {
+                # Trailing comma before closing paren
+                stop("Expected ')', got ", nt$repr())
+            }
+            # Continue to parse next selector
+        } else {
+            stop("Expected an argument, got ", nt$repr())
+        }
+    }
+
+    arguments
 }
 
 parse_attrib <- function(selector, stream) {
@@ -595,7 +785,7 @@ parse_series <- function(tokens) {
             return(c(0, result))
         }
     }
-    ab <- str_split_fixed(s, "n", 2)[1,]
+    ab <- str_split_fixed(s, "n", 2)[1, ]
     a <- str_trim(ab[1])
     b <- str_trim(ab[2])
 
@@ -658,20 +848,20 @@ compile_ <- function(pattern) {
     }
 }
 
-delims_2ch <- c('~=', '|=', '^=', '$=', '*=', '::', '!=')
-delims_1ch <- c('>', '+', '~', ',', '.', '*', '=', '[', ']', '(', ')', '|', ':', '#')
+delims_2ch <- c("~=", "|=", "^=", "$=", "*=", "::", "!=")
+delims_1ch <- c(">", "+", "~", ",", ".", "*", "=", "[", "]", "(", ")", "|", ":", "#")
 delim_escapes <- paste0("\\", delims_1ch, collapse = "|")
-match_whitespace <- compile_('[ \t\r\n\f]+')
-match_number <- compile_('[+-]?(?:[0-9]*\\.[0-9]+|[0-9]+)')
+match_whitespace <- compile_("[ \t\r\n\f]+")
+match_number <- compile_("[+-]?(?:[0-9]*\\.[0-9]+|[0-9]+)")
 match_hash <- compile_(paste0("^#([_a-zA-Z0-9-]|", nonascii, "|\\\\(?:", delim_escapes, "))+"))
 match_ident <- compile_(paste0("^([_a-zA-Z0-9-]|", nonascii, "|\\\\(?:", delim_escapes, "))+"))
 match_string_by_quote <- list("'" = compile_(paste0("([^\n\r\f\\']|", TokenMacros$string_escape, ")*")),
                               '"' = compile_(paste0('([^\n\r\f\\"]|', TokenMacros$string_escape, ")*")))
 
 # Substitution for escaped chars
-sub_simple_escape <- function(x) gsub('\\\\(.)', "\\1", x)
+sub_simple_escape <- function(x) gsub("\\\\(.)", "\\1", x)
 sub_unicode_escape <- function(x) gsub(TokenMacros$unicode_escape, "\\1", x, ignore.case = TRUE)
-sub_newline_escape <- function(x) gsub('\\\\(?:\n|\r\n|\r|\f)', "", x)
+sub_newline_escape <- function(x) gsub("\\\\(?:\n|\r\n|\r|\f)", "", x)
 
 tokenize <- function(s) {
     pos <- 1
@@ -756,7 +946,15 @@ tokenize <- function(s) {
                 for (j in seq_along(matching_quotes)) {
                     end_quote <- matching_quotes[j]
                     if (end_quote > 1) {
-                        is_escaped[j] <- split_chars[end_quote - 1] == "\\"
+                        # Count consecutive backslashes before the quote
+                        # If odd number of backslashes, the quote is escaped
+                        backslash_count <- 0
+                        check_pos <- end_quote - 1
+                        while (check_pos >= 1 && split_chars[check_pos] == "\\") {
+                            backslash_count <- backslash_count + 1
+                            check_pos <- check_pos - 1
+                        }
+                        is_escaped[j] <- (backslash_count %% 2) == 1
                     }
                 }
                 if (all(is_escaped)) {
