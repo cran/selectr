@@ -1,12 +1,12 @@
-60b22ac7464fca0e8debf8e57147331a *DESCRIPTION
+bafc12bd205aaeaf8c70ef489e183d5c *DESCRIPTION
 3f1e4e2a111ed275ca25012cbd658b79 *LICENCE
 307d573f78e96833a184da040a2b6d5e *NAMESPACE
 530048c59d463df62909d02f460f15ba *R/main.R
-569d6d4cacf9c40829dfa56177d52424 *R/parser.R
+9b2fbee07228b80976f856f508526f0f *R/parser.R
 de444ce30fd94501e7db948553419192 *R/xpath.R
 396b43f4014677c2ad7a6320ffebbf41 *README.md
 2dfbd9071b69ea0bec93d05c2ad8ee8a *inst/CITATION
-169db7f176edd98057e44e5788be11a9 *inst/NEWS.Rd
+6d693ae639e4e06274d6331c58c6087d *inst/NEWS.Rd
 944df9b3445e090bb4ffa83c7312a87c *inst/demos/svg-mathml.svg
 c1681851d43f42c568c585e8a8a1cb52 *man/css_to_xpath.Rd
 e3d86a86846ca363b6bba9e24e95aa40 *man/querySelectorAll.Rd
@@ -31,7 +31,7 @@ b4d30af3437df638dde5a93afab3d931 *tests/testthat/test-select-XML.R
 b31287d4d667b0052fc2d6b29e8e6ac2 *tests/testthat/test-shakespeare-xml2.R
 ae39299f1f36ccde24f059f10e7f1a61 *tests/testthat/test-specificity.R
 d1bca8335ea93159c1d4461f8573ebd3 *tests/testthat/test-tokenizer.R
-5d3897d58ddd6ffeb01391f7b7887a08 *tests/testthat/test-translation.R
+fc52232c5bad2bc580289894652ba22b *tests/testthat/test-translation.R
 f1c86041f6b35ad1d55789ef6437daac *tests/testthat/test-where.R
 310eeb35bd29b394b5e89eabac5bb379 *tests/testthat/test-xmllang-XML.R
 dbd3cfbd807024584632eb78d041ecda *tests/testthat/test-xmllang-xml2.R
