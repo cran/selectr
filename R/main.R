@@ -1,3 +1,10 @@
+# Key identifying one (selector, prefix, translator) translation. The
+# selector is length-prefixed so that no combination of selector and
+# prefix values can collide.
+xpath_cache_key <- function(selector, prefix, translator) {
+    paste0(translator, "\r", nchar(selector), "\r", selector, "\r", prefix)
+}
+
 css_to_xpath <- function(selector, prefix = "descendant-or-self::", translator = "generic") {
     if (missing(selector) || is.null(selector))
         stop("A valid selector (character vector) must be provided.")
@@ -9,20 +16,12 @@ css_to_xpath <- function(selector, prefix = "descendant-or-self::", translator =
     if (!is.character(translator))
         stop("The 'translator' argument must be a character vector")
 
-    if (anyNA(selector)) {
-        warning("NA values were found in the 'selector' argument, they have been removed")
-        selector <- selector[!is.na(selector)]
-    }
-
-    if (anyNA(prefix)) {
-        warning("NA values were found in the 'prefix' argument, they have been removed")
-        prefix <- prefix[!is.na(prefix)]
-    }
-
-    if (anyNA(translator)) {
-        warning("NA values were found in the 'translator' argument, they have been removed")
-        translator <- translator[!is.na(translator)]
-    }
+    if (anyNA(selector))
+        stop("NA values are not allowed in the 'selector' argument")
+    if (anyNA(prefix))
+        stop("NA values are not allowed in the 'prefix' argument")
+    if (anyNA(translator))
+        stop("NA values are not allowed in the 'translator' argument")
 
     zeroLengthArgs <- character(0)
     if (!length(selector))
@@ -49,21 +48,31 @@ css_to_xpath <- function(selector, prefix = "descendant-or-self::", translator =
     prefix <- rep(prefix, length.out = maxArgLength)
     translator <- rep(translator, length.out = maxArgLength)
 
+    # Translate each distinct (selector, prefix, translator) triple
+    # only once per call, e.g. c("#a", "#b", "#a") parses twice. The
+    # cache is local to this call so it cannot grow across calls.
+    cache <- new.env(parent = emptyenv())
     results <- character(maxArgLength)
     for (i in seq_len(maxArgLength)) {
         sel <- selector[i]
         pref <- prefix[i]
         trans <- translator[i]
 
-        tran <- if (trans == "html") {
-            HTMLTranslator$new()
-        } else if (trans == "xhtml") {
-            HTMLTranslator$new(xhtml = TRUE)
-        } else {
-            GenericTranslator$new()
-        }
+        key <- xpath_cache_key(sel, pref, trans)
+        cached <- cache[[key]]
+        if (is.null(cached)) {
+            tran <- if (trans == "html") {
+                HTMLTranslator$new()
+            } else if (trans == "xhtml") {
+                HTMLTranslator$new(xhtml = TRUE)
+            } else {
+                GenericTranslator$new()
+            }
 
-        results[i] <- tran$css_to_xpath(sel, pref)
+            cached <- tran$css_to_xpath(sel, pref)
+            cache[[key]] <- cached
+        }
+        results[i] <- cached
     }
 
     as.character(results)
@@ -107,8 +116,7 @@ querySelectorAllNS.default <- function(doc, selector, ns,
 
 querySelector.XMLInternalNode     <-
 querySelector.XMLInternalDocument <- function(doc, selector, ns = NULL, ...) {
-    if (missing(selector))
-        stop("A valid selector (character vector) must be provided.")
+    validateSelector(selector)
     results <- querySelectorAll(doc, selector, ns, ...)
     if (length(results))
         results[[1]]
@@ -117,8 +125,7 @@ querySelector.XMLInternalDocument <- function(doc, selector, ns = NULL, ...) {
 }
 
 querySelectorAll.XMLInternalNode <- function(doc, selector, ns = NULL, ...) {
-    if (missing(selector))
-        stop("A valid selector (character vector) must be provided.")
+    validateSelector(selector)
     xpath <- css_to_xpath(selector, ...)
     if (!is.null(ns)) {
         ns <- formatNS(ns)
@@ -129,8 +136,7 @@ querySelectorAll.XMLInternalNode <- function(doc, selector, ns = NULL, ...) {
 }
 
 querySelectorAll.XMLInternalDocument <- function(doc, selector, ns = NULL, ...) {
-    if (missing(selector))
-        stop("A valid selector (character vector) must be provided.")
+    validateSelector(selector)
     doc <- XML::xmlRoot(doc)
     querySelectorAll(doc, selector, ns, ...)
 }
@@ -138,8 +144,7 @@ querySelectorAll.XMLInternalDocument <- function(doc, selector, ns = NULL, ...) 
 querySelectorNS.XMLInternalNode     <-
 querySelectorNS.XMLInternalDocument <- function(doc, selector, ns,
                                                 prefix = "descendant-or-self::", ...) {
-    if (missing(selector))
-        stop("A valid selector (character vector) must be provided.")
+    validateSelector(selector)
     if (missing(ns) || !length(ns))
         stop("A namespace must be provided.")
     ns <- formatNS(ns)
@@ -150,8 +155,7 @@ querySelectorNS.XMLInternalDocument <- function(doc, selector, ns,
 querySelectorAllNS.XMLInternalNode     <-
 querySelectorAllNS.XMLInternalDocument <- function(doc, selector, ns,
                                                    prefix = "descendant-or-self::", ...) {
-    if (missing(selector))
-        stop("A valid selector (character vector) must be provided.")
+    validateSelector(selector)
     if (missing(ns) || !length(ns))
         stop("A namespace must be provided.")
     ns <- formatNS(ns)
@@ -160,11 +164,11 @@ querySelectorAllNS.XMLInternalDocument <- function(doc, selector, ns,
 }
 
 querySelector.xml_node <- function(doc, selector, ns = NULL, ...) {
-    if (missing(selector))
-        stop("A valid selector (character vector) must be provided.")
+    validateSelector(selector)
     if (is.null(ns))
         ns <- xml2::xml_ns(doc)
-    validateNS(ns)
+    else
+        ns <- formatNS(ns)
     xpath <- css_to_xpath(selector, ...)
     result <- xml2::xml_find_first(doc, xpath, ns)
     if (length(result))
@@ -174,19 +178,18 @@ querySelector.xml_node <- function(doc, selector, ns = NULL, ...) {
 }
 
 querySelectorAll.xml_node <- function(doc, selector, ns = NULL, ...) {
-    if (missing(selector))
-        stop("A valid selector (character vector) must be provided.")
+    validateSelector(selector)
     if (is.null(ns))
         ns <- xml2::xml_ns(doc)
-    validateNS(ns)
+    else
+        ns <- formatNS(ns)
     xpath <- css_to_xpath(selector, ...)
     xml2::xml_find_all(doc, xpath, ns)
 }
 
 querySelectorNS.xml_node <- function(doc, selector, ns,
                                      prefix = "descendant-or-self::", ...) {
-    if (missing(selector))
-        stop("A valid selector (character vector) must be provided.")
+    validateSelector(selector)
     if (missing(ns) || is.null(ns) || !length(ns))
         stop("A namespace must be provided.")
     ns <- formatNS(ns)
@@ -196,13 +199,18 @@ querySelectorNS.xml_node <- function(doc, selector, ns,
 
 querySelectorAllNS.xml_node <- function(doc, selector, ns,
                                         prefix = "descendant-or-self::", ...) {
-    if (missing(selector))
-        stop("A valid selector (character vector) must be provided.")
+    validateSelector(selector)
     if (missing(ns) || is.null(ns) || !length(ns))
         stop("A namespace must be provided.")
     ns <- formatNS(ns)
     prefix <- formatNSPrefix(ns, prefix)
     querySelectorAll(doc, selector, ns, prefix = prefix, ...)
+}
+
+validateSelector <- function(selector) {
+    if (missing(selector) || !is.character(selector) ||
+        length(selector) != 1 || is.na(selector))
+        stop("A valid selector (single character string) must be provided.")
 }
 
 # Takes a named vector or list and gives a named vector back
@@ -214,6 +222,8 @@ formatNS <- function(ns) {
     nsNames <- names(ns)
     if (is.null(nsNames) || anyNA(nsNames) || !all(nzchar(nsNames)))
         stop("The namespace object either missing some or all names for each element in its collection.")
+    if (is.list(ns) && any(lengths(ns) != 1))
+        stop("Each element in the namespace object must be a single character string.")
     ns <- unlist(ns)
     if (!is.character(ns))
         stop("The values in the namespace object must be a character vector.")
@@ -225,13 +235,4 @@ formatNSPrefix <- function(ns, prefix) {
     filters <- paste0("//", names(ns), ":*", collapse = "|")
     prefix <- paste0("(", filters, ")/", prefix)
     prefix
-}
-
-# Checks whether a vector is a valid character vector for namespaces
-validateNS <- function(ns) {
-    if (!is.character(ns))
-        stop("A namespace object must be comprised of characters")
-    nsNames <- names(ns)
-    if (is.null(nsNames) || anyNA(nsNames))
-        stop("The namespace object either missing some or all names for each element in its collection.")
 }

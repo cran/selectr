@@ -20,9 +20,9 @@ test_that("parser parses canonical test expressions", {
     }
 
     expect_that(parse_many("*"), equals("Element[*]"))
-    expect_that(parse_many("*|*"), equals("Element[*]"))
-    expect_that(parse_many("*|foo"), equals("Element[foo]"))
-    expect_that(parse_many("|foo"), equals("Element[foo]"))
+    expect_that(parse_many("*|*"), equals("Element[*|*]"))
+    expect_that(parse_many("*|foo"), equals("Element[*|foo]"))
+    expect_that(parse_many("|foo"), equals("Element[|foo]"))
     expect_that(parse_many("foo|*"), equals("Element[foo|*]"))
     expect_that(parse_many("foo|bar"), equals("Element[foo|bar]"))
     expect_that(parse_many('foo[lang|="zh"]'), equals("Attrib[Element[foo][lang |= 'zh']]"))
@@ -61,6 +61,16 @@ test_that("parser parses canonical test expressions", {
                 equals(rep("Attrib[Element[a][rel = 'include']]", 2)))
     expect_that(parse_many(c("a[hreflang |= 'en']", "a[hreflang|=en]")),
                 equals(rep("Attrib[Element[a][hreflang |= 'en']]", 2)))
+    expect_that(parse_many(c('a[rel="include" i]', "a[rel = include I]",
+                             'a[rel="include"i]')),
+                equals(rep("Attrib[Element[a][rel = 'include' i]]", 3)))
+    expect_that(parse_many(c('a[rel="include" s]', "a[rel = include S]")),
+                equals(rep("Attrib[Element[a][rel = 'include' s]]", 2)))
+    # 'i' and 's' are only flags in the flag position, not as values
+    expect_that(parse_many("a[rel=i]"),
+                equals("Attrib[Element[a][rel = 'i']]"))
+    expect_that(parse_many('a[rel="s" i]'),
+                equals("Attrib[Element[a][rel = 's' i]]"))
     expect_that(parse_many("div:nth-child(10)"),
                 equals("Function[Element[div]:nth-child(['10'])]"))
     expect_that(parse_many(":nth-child(2n+2)"),
@@ -73,8 +83,8 @@ test_that("parser parses canonical test expressions", {
                 equals("Pseudo[Element[label]:only]"))
     expect_that(parse_many("a:lang(fr)"),
                 equals("Function[Element[a]:lang(['fr'])]"))
-    expect_that(parse_many('div:contains("foo")'),
-                equals("Function[Element[div]:contains(['foo'])]"))
+    expect_that(parse_many('div:lang("foo")'),
+                equals("Function[Element[div]:lang(['foo'])]"))
     expect_that(parse_many("div#foobar"),
                 equals("Hash[Element[div]#foobar]"))
     expect_that(parse_many("div:not(div.foo)"),
@@ -93,6 +103,11 @@ test_that("parser parses canonical test expressions", {
                 equals("Negation[Element[*]:not(Pseudo[Element[*]:hover], Pseudo[Element[*]:visited], Pseudo[Element[*]:active])]"))
     expect_that(parse_many("a:not(.link, [href], #special)"),
                 equals("Negation[Element[a]:not(Class[Element[*].link], Attrib[Element[*][href]], Hash[Element[*]#special])]"))
+
+    expect_that(parse_many(":not(:not(a))"),
+                equals("Negation[Element[*]:not(Negation[Element[*]:not(Element[a])])]"))
+    expect_that(parse_many("div:is(:not(.foo))"),
+                equals("Matching[Element[div]:is(Negation[Element[*]:not(Class[Element[*].foo])])]"))
 
     expect_that(parse_many("div:is(.foo, #bar)"),
                 equals("Matching[Element[div]:is(Class[Element[*].foo], Hash[Element[*]#bar])]"))
@@ -114,7 +129,27 @@ test_that("parser parses canonical test expressions", {
                 equals("Has[Element[ul]:has(Element[li])]"))
     expect_that(parse_many(":has(p, div)"),
                 equals("Has[Element[*]:has(Element[p], Element[div])]"))
- 
+
+    # :has() with leading combinators (selectors-4 relative selectors)
+    expect_that(parse_many("e:has(> img)"),
+                equals("Has[Element[e]:has(RelativeSelector[> Element[img]])]"))
+    expect_that(parse_many("e:has(~ p)"),
+                equals("Has[Element[e]:has(RelativeSelector[~ Element[p]])]"))
+    expect_that(parse_many("e:has(+ p)"),
+                equals("Has[Element[e]:has(RelativeSelector[+ Element[p]])]"))
+    expect_that(parse_many("e:has(> a, ~ .foo, p)"),
+                equals("Has[Element[e]:has(RelativeSelector[> Element[a]], RelativeSelector[~ Class[Element[*].foo]], Element[p])]"))
+
+    # complex selectors inside functional pseudo-classes (selectors-4)
+    expect_that(parse_many(":is(a b)"),
+                equals("Matching[Element[*]:is(CombinedSelector[Element[a] <followed> Element[b]])]"))
+    expect_that(parse_many(":not(a > b)"),
+                equals("Negation[Element[*]:not(CombinedSelector[Element[a] > Element[b]])]"))
+    expect_that(parse_many(":where(a + b, c)"),
+                equals("Where[Element[*]:where(CombinedSelector[Element[a] + Element[b]], Element[c])]"))
+    expect_that(parse_many("e:has(> a b.x)"),
+                equals("Has[Element[e]:has(RelativeSelector[> CombinedSelector[Element[a] <followed> Class[Element[b].x]]])]"))
+
     expect_that(parse_many("td ~ th"),
                 equals("CombinedSelector[Element[td] ~ Element[th]]"))
 
@@ -152,13 +187,54 @@ test_that("parsed elements print correctly", {
 })
 
 test_that("compiled regex parsing functions behave as expected", {
-    m_whitespace <- compile_('[ \t\r\n\f]+')
-    m_number <- compile_('[+-]?(?:[0-9]*\\.[0-9]+|[0-9]+)')
+    m_whitespace <- compile_('^[ \t\r\n\f]+')
+    m_number <- compile_('^[+-]?(?:[0-9]*\\.[0-9]+|[0-9]+)')
     m_hash <- compile_(paste0("^#([_a-zA-Z0-9-]|", nonascii, "|\\\\(?:", delim_escapes, "))+"))
     m_ident <- compile_(paste0("^([_a-zA-Z0-9-]|", nonascii, "|\\\\(?:", delim_escapes, "))+"))
 
     expect_that(m_whitespace("a b"), equals(match_whitespace("a b")))
+    expect_that(m_whitespace(" a b"), equals(match_whitespace(" a b")))
     expect_that(m_number("a 1"), equals(match_number("a 1")))
+    expect_that(m_number("1 a"), equals(match_number("1 a")))
     expect_that(m_hash("a #test"), equals(match_hash("a #test")))
     expect_that(m_ident(" test"), equals(match_ident(" test")))
+})
+
+test_that("fast-path parses agree with the full parser", {
+    full_parse <- function(css) {
+        stream <- TokenStream$new(tokenize(css))
+        stream$source_text <- css
+        parse_selector_group(stream)
+    }
+    reprs <- function(selectors) {
+        unlist(lapply(selectors, function(s) s$repr()))
+    }
+
+    selectors <- c(
+        # element fast path (h1 previously missed it: letters only)
+        "div", "h1", " div ", "x-tag", "a_b",
+        # id fast path, including the digit-led ids the tokenizer allows
+        "#bar", "foo#bar", "#123", "h1#a-1", " #x ",
+        # class fast path (dead before: indexed out of bounds)
+        ".foo", "foo.bar", "h2.a_b", " .foo ",
+        # near misses that must fall through to the full parser
+        "*", "a b", "a.b.c", "a:hover", "é", ".é", "-x", "#a.b")
+    for (css in selectors) {
+        expect_that(reprs(parse(css)), equals(reprs(full_parse(css))),
+                    info = css)
+    }
+})
+
+test_that("token_equality always returns a single logical", {
+    ident <- Token("IDENT", "a", 1)
+    eof <- EOFToken(2)
+
+    expect_true(token_equality(ident, "IDENT", "a"))
+    expect_false(token_equality(ident, "IDENT", "b"))
+    expect_false(token_equality(ident, "DELIM", "a"))
+    expect_true(token_equality(eof, "EOF", NULL))
+    # NULL on only one side is FALSE, not logical(0) (an error under
+    # && on R >= 4.3) or a zero-length value in a caller's if ()
+    expect_false(token_equality(ident, "IDENT", NULL))
+    expect_false(token_equality(eof, "EOF", "a"))
 })

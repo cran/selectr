@@ -1,9 +1,8 @@
-escape <- paste0("\\\\([0-9a-f]{1,6})(\r\n|[ \n\r\t\f])?", "|\\\\[^\n\r\f0-9a-f]")
+escape <- paste0("\\\\([0-9a-fA-F]{1,6})(\r\n|[ \n\r\t\f])?",
+                 "|\\\\[^\n\r\f0-9a-fA-F]")
 nonascii <- "[^\1-\177]"
-hash_re <- "([_a-z0-9-]|\\\\([0-9a-f]{1,6})(\r\n|[ \n\r\t\f])?|[^\1-\177])"
 
-TokenMacros <- list(unicode_escape = "\\\\([0-9a-f]{1,6})(?:\r\n|[ \n\r\t\f])?",
-                    escape = escape,
+TokenMacros <- list(escape = escape,
                     string_escape = paste0("\\\\(?:\n|\r\n|\r|\f)|", escape),
                     nonascii = nonascii,
                     nmchar = paste0("([_a-z0-9-]|", escape, "|", nonascii, ")"),
@@ -209,10 +208,17 @@ Matching <- R6Class("Matching",
             )
         },
         specificity = function() {
-            specs <- sapply(self$selector_list, function(s) s$specificity())
-            specs <- t(specs)
-            specs <- specs[order(-specs[, 1], -specs[, 2], -specs[, 3]), ]
-            specs[1, ]
+            # :is() takes the specificity of its most specific argument,
+            # added to the base selector
+            base_specs <- self$selector$specificity()
+            sub_specs <- sapply(self$selector_list, function(s) s$specificity())
+            # sapply returns a matrix with each column being a selector's specificity
+            sub_specs <- t(sub_specs)
+            if (nrow(sub_specs) > 1) {
+                # sort by specificity (id, class, element) descending
+                sub_specs <- sub_specs[order(-sub_specs[, 1], -sub_specs[, 2], -sub_specs[, 3]), , drop = FALSE]
+            }
+            base_specs + sub_specs[1, ]
         },
         show = function() { # nocov start
             cat(self$repr(), "\n")
@@ -251,6 +257,38 @@ Where <- R6Class("Where",
     )
 )
 
+# A :has() argument with an explicit leading combinator (selectors-4
+# <relative-selector>): wraps the parsed selector alongside its combinator.
+# Arguments with the omitted (implied descendant) combinator are stored
+# unwrapped in Has$selector_list.
+RelativeSelector <- R6Class("RelativeSelector",
+    public = list(
+        combinator = NULL,
+        selector = NULL,
+        initialize = function(combinator, selector) {
+            self$combinator <- combinator
+            self$selector <- selector
+        },
+        repr = function() {
+            paste0(
+                first_class_name(self),
+                "[",
+                self$combinator,
+                " ",
+                self$selector$repr(),
+                "]"
+            )
+        },
+        specificity = function() {
+            # The leading combinator contributes no specificity
+            self$selector$specificity()
+        },
+        show = function() { # nocov start
+            cat(self$repr(), "\n")
+        } # nocov end
+    )
+)
+
 Has <- R6Class("Has",
     public = list(
         selector = NULL,
@@ -273,12 +311,17 @@ Has <- R6Class("Has",
             )
         },
         specificity = function() {
-            specs <- sapply(self$selector_list, function(s) s$specificity())
-            specs <- t(specs)
-            specs <- specs[order(-specs[, 1], -specs[, 2], -specs[, 3]), ]
-            # Add the maximum specificity from the selector list to the base selector
+            # :has() takes the specificity of its most specific argument,
+            # added to the base selector
             base_specs <- self$selector$specificity()
-            base_specs + specs[1, ]
+            sub_specs <- sapply(self$selector_list, function(s) s$specificity())
+            # sapply returns a matrix with each column being a selector's specificity
+            sub_specs <- t(sub_specs)
+            if (nrow(sub_specs) > 1) {
+                # sort by specificity (id, class, element) descending
+                sub_specs <- sub_specs[order(-sub_specs[, 1], -sub_specs[, 2], -sub_specs[, 3]), , drop = FALSE]
+            }
+            base_specs + sub_specs[1, ]
         },
         show = function() { # nocov start
             cat(self$repr(), "\n")
@@ -293,12 +336,15 @@ Attrib <- R6Class("Attrib",
         attrib = NULL,
         operator = NULL,
         value = NULL,
-        initialize = function(selector, namespace, attrib, operator, value) {
+        flag = NULL,
+        initialize = function(selector, namespace, attrib, operator, value,
+                              flag = NULL) {
             self$selector <- selector
             self$namespace <- namespace
             self$attrib <- attrib
             self$operator <- operator
             self$value <- value
+            self$flag <- flag
         },
         repr = function() {
             attr <-
@@ -325,7 +371,9 @@ Attrib <- R6Class("Attrib",
                     self$operator,
                     " '",
                     self$value,
-                    "']]")
+                    "'",
+                    if (!is.null(self$flag)) paste0(" ", self$flag) else "",
+                    "]]")
         },
         specificity = function() {
             specs <- self$selector$specificity()
@@ -431,36 +479,51 @@ CombinedSelector <- R6Class("CombinedSelector",
 
 #### Parser
 
+# Fast paths for the most common simple selectors, skipping
+# tokenization. INVARIANT: each regex must accept only selectors that
+# the full tokenize()/parse_selector_group() pipeline would parse to
+# the same result; anything else falls through to the full parser.
+# The name patterns are therefore conservative ASCII subsets of the
+# tokenizer's identifier grammar (match_ident, sans escapes and
+# non-ASCII) and hash grammar (match_hash).
+fast_ident <- "[a-zA-Z][a-zA-Z0-9_-]*"
+fast_name <- "[a-zA-Z0-9_-]+"
+
 # foo
-el_re <- "^[ \t\r\n\f]*([a-zA-Z]+)[ \t\r\n\f]*$"
+el_re <- paste0("^[ \t\r\n\f]*(", fast_ident, ")[ \t\r\n\f]*$")
 
 # foo#bar or #bar
-id_re <- "^[ \t\r\n\f]*([a-zA-Z]*)#([a-zA-Z0-9_-]+)[ \t\r\n\f]*$"
+id_re <- paste0("^[ \t\r\n\f]*(", fast_ident, ")?",
+                "#(", fast_name, ")[ \t\r\n\f]*$")
 
 # foo.bar or .bar
-class_re <- "^[ \t\r\n\f]*([a-zA-Z]*)\\.([a-zA-Z][a-zA-Z0-9_-]*)[ \t\r\n\f]*$"
+class_re <- paste0("^[ \t\r\n\f]*(", fast_ident, ")?",
+                   "\\.(", fast_ident, ")[ \t\r\n\f]*$")
 
 parse <- function(css) {
-    el_match <- str_match(css, el_re)[1, 2]
-    if (!is.na(el_match))
-        return(list(Selector$new(Element$new(element = el_match))))
-    id_match <- str_match(css, id_re)[1, 2:3]
-    if (!is.na(id_match[2]))
+    # regmatches() represents an unmatched optional group as "", which
+    # cannot be confused with a present element name since fast_ident
+    # never matches an empty string
+    el_match <- regmatches(css, regexec(el_re, css))[[1]]
+    if (length(el_match))
+        return(list(Selector$new(Element$new(element = el_match[2]))))
+    id_match <- regmatches(css, regexec(id_re, css))[[1]]
+    if (length(id_match))
         return(list(Selector$new(
                         Hash$new(
                             Element$new(
                                 element =
-                                    if (nzchar(id_match[1]) == 0) NULL
-                                    else id_match[1]),
-                            id_match[2]))))
-    class_match <- str_match(css, class_re)[1, 2:3]
-    if (!is.na(class_match[3]))
+                                    if (nzchar(id_match[2])) id_match[2]
+                                    else NULL),
+                            id_match[3]))))
+    class_match <- regmatches(css, regexec(class_re, css))[[1]]
+    if (length(class_match))
         return(list(Selector$new(
                         ClassSelector$new(
                             Element$new(
                                 element =
-                                    if (is.null(class_match[2]) || is.na(class_match[2])) NULL
-                                    else class_match[2]),
+                                    if (nzchar(class_match[2])) class_match[2]
+                                    else NULL),
                             class_match[3]))))
     stream <- TokenStream$new(tokenize(css))
     stream$source_text <- css
@@ -488,14 +551,12 @@ parse_selector_group <- function(stream) {
 
 token_equality <- function(token, t, val) {
     if (token$type != t)
-       return(FALSE)
-    # val can be NULL or (maybe) NA
-    if (is.null(val) && is.null(token$value))
-        return(TRUE)
-    if (is.na(val) && is.na(token$value))
-        return(TRUE)
-    # Should be OK with regular equality
-    token$value == val
+        return(FALSE)
+    # val or the token value can be NULL (e.g. for EOF tokens); they
+    # are only equal when both are
+    if (is.null(val) || is.null(token$value))
+        return(is.null(val) && is.null(token$value))
+    isTRUE(token$value == val)
 }
 
 parse_selector <- function(stream) {
@@ -515,7 +576,7 @@ parse_selector <- function(stream) {
                pseudo_element,
                " not at the end of a selector")
         }
-        if (peek$is_delim(c("+", ">", "~"))) {
+        if (token_is_delim(peek, c("+", ">", "~"))) {
             # A combinator
             combinator <- stream$nxt()$value
             stream$skip_whitespace()
@@ -531,22 +592,36 @@ parse_selector <- function(stream) {
     list(result = result, pseudo_element = pseudo_element)
 }
 
-parse_simple_selector <- function(stream, inside_negation = FALSE) {
+parse_simple_selector <- function(stream, inside_arguments = FALSE,
+                                  inside_has = FALSE) {
     stream$skip_whitespace()
     selector_start <- length(stream$used)
     peek <- stream$peek()
-    if (peek$type == "IDENT" || token_equality(peek, "DELIM", "*")) {
+    if (peek$type == "IDENT" || token_equality(peek, "DELIM", "*") ||
+        token_equality(peek, "DELIM", "|")) {
         if (peek$type == "IDENT") {
             namespace <- stream$nxt()$value
-        } else {
+        } else if (token_equality(peek, "DELIM", "*")) {
             stream$nxt()
-            namespace <- NULL
+            # '*|e': any namespace, including none
+            namespace <- "*"
+        } else {
+            # Leading '|', i.e. '|e' or '|*': explicitly no namespace
+            namespace <- ""
         }
         if (token_equality(stream$peek(), "DELIM", "|")) {
             stream$nxt()
+            # A second '|' makes this the Selectors 4 column
+            # combinator ('a || b' and namespaceless '||b' arrive
+            # here alike): column membership depends on table-layout
+            # arithmetic (colspan/rowspan carry-over) that XPath 1.0
+            # cannot express, so name the construct instead of
+            # falling through to a stray-token error
+            if (token_equality(stream$peek(), "DELIM", "|"))
+                stop("The column combinator '||' is not supported")
             element <- stream$next_ident_or_star()
         } else {
-            element <- namespace
+            element <- if (identical(namespace, "*")) NULL else namespace
             namespace <- NULL
         }
     } else {
@@ -557,8 +632,8 @@ parse_simple_selector <- function(stream, inside_negation = FALSE) {
     while (TRUE) {
         peek <- stream$peek()
         if (any(peek$type == c("S", "EOF")) ||
-            peek$is_delim(c(",", "+", ">", "~")) ||
-            (inside_negation && token_equality(peek, "DELIM", ")"))) {
+            token_is_delim(peek, c(",", "+", ">", "~")) ||
+            (inside_arguments && token_equality(peek, "DELIM", ")"))) {
             break
         }
         if (!is.null(pseudo_element)) {
@@ -571,9 +646,6 @@ parse_simple_selector <- function(stream, inside_negation = FALSE) {
         } else if (token_equality(peek, "DELIM", ".")) {
             stream$nxt()
             result <- ClassSelector$new(result, stream$next_ident())
-        } else if (token_equality(peek, "DELIM", "|")) {
-            stream$nxt()
-            result <- Element$new(element = stream$next_ident())
         } else if (token_equality(peek, "DELIM", "[")) {
             stream$nxt()
             result <- parse_attrib(result, stream)
@@ -601,19 +673,28 @@ parse_simple_selector <- function(stream, inside_negation = FALSE) {
             stream$nxt()
             stream$skip_whitespace()
             if (tolower(ident) == "not") {
-                if (inside_negation) {
-                    stop("Got nested :not()")
-                }
-                selectors <- parse_simple_selector_arguments(stream, "not")
+                # Selectors Level 4 places no nesting restriction on
+                # :not(), so :not(:not(a)), :is(:not(a)), etc. are valid.
+                selectors <- parse_simple_selector_arguments(stream, "not",
+                                                             inside_has = inside_has)
                 result <- Negation$new(result, selectors)
             } else if (any(tolower(ident) == c("matches", "is"))) {
-                selectors <- parse_simple_selector_arguments(stream, tolower(ident))
+                selectors <- parse_simple_selector_arguments(stream, tolower(ident),
+                                                             inside_has = inside_has)
                 result <- Matching$new(result, selectors)
             } else if (tolower(ident) == "where") {
-                selectors <- parse_simple_selector_arguments(stream, "where")
+                selectors <- parse_simple_selector_arguments(stream, "where",
+                                                             inside_has = inside_has)
                 result <- Where$new(result, selectors)
             } else if (tolower(ident) == "has") {
-                selectors <- parse_simple_selector_arguments(stream, "has")
+                # The :has() argument grammar excludes :has() at any
+                # depth (selectors-4): "nesting :has() is not allowed"
+                if (inside_has) {
+                    stop("Got nested :has()")
+                }
+                selectors <- parse_simple_selector_arguments(stream, "has",
+                                                             inside_has = TRUE,
+                                                             relative = TRUE)
                 result <- Has$new(result, selectors)
             } else {
                 arguments <- list()
@@ -621,8 +702,9 @@ parse_simple_selector <- function(stream, inside_negation = FALSE) {
                 i <- 1
 
                 # Parse the function arguments (e.g., "2n+1" for nth-child)
-                # :lang() and :dir() can accept comma-separated lists
-                allow_commas <- tolower(ident) %in% c("lang", "dir")
+                # :lang() can accept a comma-separated list; :dir() takes
+                # exactly one identifier (CSS Selectors Level 4)
+                allow_commas <- tolower(ident) == "lang"
 
                 while (TRUE) {
                     nt <- stream$nxt()
@@ -640,66 +722,131 @@ parse_simple_selector <- function(stream, inside_negation = FALSE) {
 
                             # Parse the selector list that follows 'of'
                             stream$skip_whitespace()
-                            selector_list <- parse_simple_selector_arguments(stream, ident)
+                            selector_list <- parse_simple_selector_arguments(stream, ident,
+                                                                             inside_has = inside_has)
                             break
                         }
                     } else if (token_equality(nt, "DELIM", "*") && allow_commas) {
-                        # For :lang() and :dir(), allow * as a wildcard
+                        # For :lang(), allow * as a wildcard
                         arguments[[i]] <- nt
                         i <- i + 1
                     } else if (nt$type == "S") {
+                        # Keep whitespace tokens for the An+B (nth-*)
+                        # functions so parse_series() can validate
+                        # whitespace placement; other functions simply
+                        # skip whitespace.
+                        if (startsWith(tolower(ident), "nth-")) {
+                            arguments[[i]] <- nt
+                            i <- i + 1
+                        }
                         next
                     } else if (token_equality(nt, "DELIM", ",") && allow_commas) {
-                        # For :lang() and :dir(), commas separate multiple values
+                        # For :lang(), commas separate multiple values
                         stream$skip_whitespace()
                         next
-                    } else if (token_equality(nt, "DELIM", ")")) {
+                    } else if (token_equality(nt, "DELIM", ")") ||
+                               nt$type == "EOF") {
+                        # EOF auto-closes the function (css-syntax):
+                        # ':lang(fr' means ':lang(fr)'
                         break
                     } else {
-                        stop("Expected an argument, got ", nt$repr())
+                        stop("Expected an argument, got ", token_repr(nt))
                     }
                 }
 
                 if (length(arguments) == 0) {
-                    stop("Expected at least one argument, got ", nt$repr())
+                    stop("Expected at least one argument, got ", token_repr(nt))
                 }
 
                 result <- Function$new(result, ident, arguments, selector_list)
             }
         } else {
-            stop("Expected selector, got ", stream$peek()$repr())
+            stop("Expected selector, got ", token_repr(stream$peek()))
         }
     }
     if (length(stream$used) == selector_start) {
-        stop("Expected selector, got ", stream$peek()$repr())
+        stop("Expected selector, got ", token_repr(stream$peek()))
     }
     list(result = result, pseudo_element = pseudo_element)
 }
 
-parse_simple_selector_arguments <- function(stream, function_name = NULL) { # nolint: object_length_linter.
+parse_simple_selector_arguments <- function(stream, function_name = NULL, # nolint: object_length_linter.
+                                            inside_has = FALSE,
+                                            relative = FALSE) {
     index <- 1
     arguments <- list()
 
-    while (TRUE) {
-        results <- parse_simple_selector(stream, inside_negation = TRUE)
-        result <- results$result
-        pseudo_element <- results$pseudo_element
-
+    check_no_pseudo_element <- function(pseudo_element) {
         if (!is.null(pseudo_element)) {
             if (!is.null(function_name)) {
-                stop("Got pseudo-element ::", pseudo_element, " inside :", function_name, "() at ", stream$peeked$pos)
+                stop("Got pseudo-element ::", pseudo_element,
+                     " inside :", function_name,
+                     "() at ", stream$peek()$pos)
             } else {
                 stop("Got pseudo-element ::", pseudo_element, " inside function")
             }
         }
+    }
 
+    while (TRUE) {
+        combinator <- NULL
+        if (relative) {
+            # :has() takes a <relative-selector-list> (selectors-4
+            # section 17): each argument may begin with an explicit
+            # combinator; the omitted combinator means descendant
+            stream$skip_whitespace()
+            peek <- stream$peek()
+            if (token_is_delim(peek, c(">", "~", "+"))) {
+                combinator <- stream$nxt()$value
+            }
+        }
+        results <- parse_simple_selector(stream, inside_arguments = TRUE,
+                                         inside_has = inside_has)
+        result <- results$result
+        check_no_pseudo_element(results$pseudo_element)
+
+        # Arguments are complex selectors (selectors-4): consume any
+        # combinator chain following the compound, as parse_selector()
+        # does at the top level
+        while (TRUE) {
+            peek <- stream$peek()
+            if (peek$type == "S") {
+                stream$skip_whitespace()
+                peek <- stream$peek()
+                if (token_is_delim(peek, c(")", ","))) {
+                    break
+                }
+                if (token_is_delim(peek, c("+", ">", "~"))) {
+                    chain_combinator <- stream$nxt()$value
+                } else {
+                    # The whitespace was a descendant combinator
+                    chain_combinator <- " "
+                }
+            } else if (token_is_delim(peek, c("+", ">", "~"))) {
+                chain_combinator <- stream$nxt()$value
+            } else {
+                # ')', ',' or EOF: leave for the argument-list logic below
+                break
+            }
+            stuff <- parse_simple_selector(stream, inside_arguments = TRUE,
+                                           inside_has = inside_has)
+            check_no_pseudo_element(stuff$pseudo_element)
+            result <- CombinedSelector$new(result, chain_combinator,
+                                           stuff$result)
+        }
+
+        if (!is.null(combinator)) {
+            result <- RelativeSelector$new(combinator, result)
+        }
         arguments[[index]] <- result
         index <- index + 1
 
         stream$skip_whitespace()
         nt <- stream$nxt()
 
-        if (token_equality(nt, "DELIM", ")")) {
+        if (token_equality(nt, "DELIM", ")") || nt$type == "EOF") {
+            # EOF auto-closes the function (css-syntax):
+            # ':is(a' means ':is(a)'
             break
         } else if (token_equality(nt, "DELIM", ",")) {
             stream$skip_whitespace()
@@ -707,11 +854,11 @@ parse_simple_selector_arguments <- function(stream, function_name = NULL) { # no
             peek <- stream$peek()
             if (token_equality(peek, "DELIM", ")")) {
                 # Trailing comma before closing paren
-                stop("Expected ')', got ", nt$repr())
+                stop("Expected ')', got ", token_repr(nt))
             }
             # Continue to parse next selector
         } else {
-            stop("Expected an argument, got ", nt$repr())
+            stop("Expected an argument, got ", token_repr(nt))
         }
     }
 
@@ -720,48 +867,73 @@ parse_simple_selector_arguments <- function(stream, function_name = NULL) { # no
 
 parse_attrib <- function(selector, stream) {
     stream$skip_whitespace()
-    attrib <- stream$next_ident_or_star()
-    if (is.null(attrib) && !token_equality(stream$peek(), "DELIM", "|"))
-        stop("Expected '|', got ", stream$peek()$repr())
     if (token_equality(stream$peek(), "DELIM", "|")) {
+        # '[|attr]': explicitly no namespace, equivalent to '[attr]'
+        # because unprefixed attribute names have no namespace
         stream$nxt()
-        namespace <- attrib
         attrib <- stream$next_ident()
-        op <- NULL
-    } else if (token_equality(stream$peek(), "DELIM", "|=")) {
-        namespace <- NULL
-        stream$nxt()
-        op <- "|="
-    } else {
         namespace <- op <- NULL
+    } else {
+        attrib <- stream$next_ident_or_star()
+        if (is.null(attrib) && !token_equality(stream$peek(), "DELIM", "|"))
+            stop("Expected '|', got ", token_repr(stream$peek()))
+        if (token_equality(stream$peek(), "DELIM", "|")) {
+            stream$nxt()
+            # next_ident_or_star() returns NULL for '*', i.e. '[*|attr]'
+            namespace <- if (is.null(attrib)) "*" else attrib
+            attrib <- stream$next_ident()
+            op <- NULL
+        } else if (token_equality(stream$peek(), "DELIM", "|=")) {
+            namespace <- NULL
+            stream$nxt()
+            op <- "|="
+        } else {
+            namespace <- op <- NULL
+        }
     }
     if (is.null(op)) {
         stream$skip_whitespace()
         nt <- stream$nxt()
-        if (token_equality(nt, "DELIM", "]")) {
+        # EOF auto-closes the block (css-syntax), here and below:
+        # '[rel' means '[rel]'. Anything else before the ']' is still
+        # an error
+        if (token_equality(nt, "DELIM", "]") || nt$type == "EOF") {
             return(Attrib$new(selector, namespace, attrib, "exists", NULL))
         } else if (token_equality(nt, "DELIM", "=")) {
             op <- "="
-        } else if (nt$is_delim(c("^=", "$=", "*=", "~=", "|=", "!="))) {
+        } else if (token_is_delim(nt, c("^=", "$=", "*=", "~=", "|="))) {
             op <- nt$value
         } else {
-            stop("Operator expected, got ", nt$repr())
+            stop("Operator expected, got ", token_repr(nt))
         }
     }
     stream$skip_whitespace()
     value <- stream$nxt()
     if (!value$type %in% c("IDENT", "STRING")) {
-        stop("Expected string or ident, got ", value$repr())
+        stop("Expected string or ident, got ", token_repr(value))
     }
     stream$skip_whitespace()
     nt <- stream$nxt()
-    if (!token_equality(nt, "DELIM", "]")) {
-        stop("Expected ']', got ", nt$repr())
+    # CSS Selectors Level 4 allows an optional case-sensitivity flag
+    # before the closing bracket, e.g. '[attr="value" i]'
+    flag <- NULL
+    if (nt$type == "IDENT" && tolower(nt$value) %in% c("i", "s")) {
+        flag <- tolower(nt$value)
+        stream$skip_whitespace()
+        nt <- stream$nxt()
     }
-    Attrib$new(selector, namespace, attrib, op, value$value)
+    if (!token_equality(nt, "DELIM", "]") && nt$type != "EOF") {
+        stop("Expected ']', got ", token_repr(nt))
+    }
+    Attrib$new(selector, namespace, attrib, op, value$value, flag)
 }
 
 str_int <- function(s) {
+    # An+B takes <integer> values only (css-syntax-3), so reject
+    # anything as.integer() would otherwise coerce through double
+    # and truncate, e.g. "2.5" -> 2L or "2e1" -> 20L.
+    if (!grepl("^[+-]?[0-9]+$", s))
+        return(NA_integer_)
     suppressWarnings(as.integer(s))
 }
 
@@ -771,13 +943,30 @@ parse_series <- function(tokens) {
             stop("String tokens not allowed in series.")
     }
     s <- paste0(sapply(tokens, function(x) x$value), collapse = "")
+    # The An+B microsyntax is ASCII case-insensitive (css-syntax-3),
+    # e.g. "2N", "ODD", "EVEN". chartr() rather than tolower() so the
+    # mapping is locale-independent; "nodev" covers every letter that
+    # can appear in a valid series.
+    s <- chartr("NODEV", "nodev", s)
+    # Validate against the An+B grammar (css-syntax-3 section 6):
+    # whitespace is permitted only around the +/- sign that separates
+    # the B value (e.g. "2n + 1"), never inside or between the other
+    # components ("3 7", "2 n", "- n" are all invalid).
+    anb <- paste0("^[ \t\r\n\f]*",
+                  "(odd|even|[+-]?[0-9]+|",
+                  "[+-]?[0-9]*n([ \t\r\n\f]*[+-][ \t\r\n\f]*[0-9]+)?)",
+                  "[ \t\r\n\f]*$")
+    if (!grepl(anb, s))
+        return(NULL)
+    s <- gsub("[ \t\r\n\f]+", "", s)
     if (s == "odd")
         return(2:1)
     else if (s == "even")
         return(c(2, 0))
     else if (s == "n")
         return(1:0)
-    if (is.na(str_locate(s, "n")[1, 1])) {
+    n_pos <- regexpr("n", s, fixed = TRUE)
+    if (n_pos == -1L) {
         result <- str_int(s)
         if (is.na(result)) {
             return(NULL)
@@ -785,9 +974,9 @@ parse_series <- function(tokens) {
             return(c(0, result))
         }
     }
-    ab <- str_split_fixed(s, "n", 2)[1, ]
-    a <- str_trim(ab[1])
-    b <- str_trim(ab[2])
+    # Split at the first 'n' only
+    a <- trimws(substring(s, 1, n_pos - 1))
+    b <- trimws(substring(s, n_pos + 1))
 
     intb <- str_int(b)
     if (!nzchar(a) && is.na(intb))
@@ -806,62 +995,82 @@ parse_series <- function(tokens) {
     c(a, b)
 }
 
-Token <- R6Class("Token",
-    public = list(
-        type = "",
-        value = NULL,
-        pos = 1,
-        initialize = function(type = "", value = NULL, pos = 1) {
-            self$type <- type
-            self$value <- value
-            self$pos <- pos
-        },
-        repr = function() {
-            paste0("<", self$type, " '", self$value, "' at ", self$pos, ">")
-        },
-        is_delim = function(values) {
-            self$type == "DELIM" && self$value %in% values
-        },
-        show = function() { # nocov start
-            cat(self$repr(), "\n")
-        } # nocov end
-    )
-)
+# Tokens are created in bulk by tokenize() and used as plain records,
+# so they are ordinary lists rather than R6 objects (an environment and
+# class attribute per token is significant overhead at that volume).
+Token <- function(type = "", value = NULL, pos = 1) {
+    list(type = type, value = value, pos = pos)
+}
 
-EOFToken <- R6Class("EOFToken",
-    inherit = Token,
-    public = list(
-        initialize = function(pos = 1, type = "EOF", value = NULL) {
-            super$initialize(type, value, pos)
-        },
-        repr = function() {
-            paste0("<", self$type, " at ", self$pos, ">")
-        },
-        show = function() { # nocov start
-            cat(self$repr(), "\n")
-        } # nocov end
-    ))
+EOFToken <- function(pos = 1) {
+    list(type = "EOF", value = NULL, pos = pos)
+}
+
+token_repr <- function(token) {
+    if (token$type == "EOF")
+        paste0("<EOF at ", token$pos, ">")
+    else
+        paste0("<", token$type, " '", token$value, "' at ", token$pos, ">")
+}
+
+token_is_delim <- function(token, values) {
+    token$type == "DELIM" && token$value %in% values
+}
 
 compile_ <- function(pattern) {
     function(x) {
-        str_locate(x, pattern)[1, ]
+        m <- regexpr(pattern, x, perl = TRUE)
+        if (m == -1L)
+            c(NA_integer_, NA_integer_)
+        else
+            c(m, m + attr(m, "match.length") - 1L)
     }
 }
 
-delims_2ch <- c("~=", "|=", "^=", "$=", "*=", "::", "!=")
+delims_2ch <- c("~=", "|=", "^=", "$=", "*=", "::")
 delims_1ch <- c(">", "+", "~", ",", ".", "*", "=", "[", "]", "(", ")", "|", ":", "#")
 delim_escapes <- paste0("\\", delims_1ch, collapse = "|")
-match_whitespace <- compile_("[ \t\r\n\f]+")
-match_number <- compile_("[+-]?(?:[0-9]*\\.[0-9]+|[0-9]+)")
-match_hash <- compile_(paste0("^#([_a-zA-Z0-9-]|", nonascii, "|\\\\(?:", delim_escapes, "))+"))
-match_ident <- compile_(paste0("^([_a-zA-Z0-9-]|", nonascii, "|\\\\(?:", delim_escapes, "))+"))
-match_string_by_quote <- list("'" = compile_(paste0("([^\n\r\f\\']|", TokenMacros$string_escape, ")*")),
-                              '"' = compile_(paste0('([^\n\r\f\\"]|', TokenMacros$string_escape, ")*")))
+match_whitespace <- compile_("^[ \t\r\n\f]+")
+match_number <- compile_("^[+-]?(?:[0-9]*\\.[0-9]+|[0-9]+)")
+# The escape alternative covers both unicode escapes (e.g. '\31 ') and
+# simple escapes of any non-hex character, which includes all delimiters
+match_hash <- compile_(paste0("^#([_a-zA-Z0-9-]|", nonascii, "|", escape, ")+"))
+match_ident <- compile_(paste0("^([_a-zA-Z0-9-]|", nonascii, "|", escape, ")+"))
+# String content: any character except a newline, backslash, or the
+# quote character, or an escape sequence. Anchored so the match end
+# gives the content length; the closing quote must follow immediately.
+match_string_by_quote <- list("'" = compile_(paste0("^([^\n\r\f\\\\']|", TokenMacros$string_escape, ")*")),
+                              '"' = compile_(paste0('^([^\n\r\f\\\\"]|', TokenMacros$string_escape, ")*")))
 
-# Substitution for escaped chars
-sub_simple_escape <- function(x) gsub("\\\\(.)", "\\1", x)
-sub_unicode_escape <- function(x) gsub(TokenMacros$unicode_escape, "\\1", x, ignore.case = TRUE)
-sub_newline_escape <- function(x) gsub("\\\\(?:\n|\r\n|\r|\f)", "", x)
+# Decode a token's escape sequences in one left-to-right pass
+# (css-syntax-3 "consume an escaped code point"): each backslash
+# consumes either 1-6 hex digits plus one optional whitespace (a
+# unicode escape, e.g. '\31 ' is U+0031, i.e. '1'), an escaped newline
+# (a line continuation, strings only), or exactly one literal
+# character. The single non-overlapping global match claims each
+# sequence's characters, so the text consumed by one escape (e.g. the
+# tail of an escaped backslash '\\') is never re-read as the start of
+# another, as sequential substitution passes would do.
+decode_escapes <- function(x, newlines = FALSE) {
+    pattern <- paste0("\\\\[0-9a-fA-F]{1,6}(?:\r\n|[ \n\r\t\f])?",
+                      if (newlines) "|\\\\(?:\r\n|[\n\r\f])",
+                      "|\\\\.")
+    m <- gregexpr(pattern, x, perl = TRUE)
+    regmatches(x, m) <- lapply(regmatches(x, m), function(esc) {
+        if (length(esc) == 0) {
+            return(esc)
+        }
+        is_hex <- grepl("^\\\\[0-9a-fA-F]", esc)
+        out <- substring(esc, 2)              # simple escape: the character
+        out[grepl("^[\n\r\f]", out)] <- ""    # line continuation: nothing
+        if (any(is_hex)) {
+            hex <- sub("(?:\r\n|[ \n\r\t\f])$", "", out[is_hex], perl = TRUE)
+            out[is_hex] <- intToUtf8(strtoi(hex, base = 16L), multiple = TRUE)
+        }
+        out
+    })
+    x
+}
 
 tokenize <- function(s) {
     pos <- 1
@@ -872,7 +1081,7 @@ tokenize <- function(s) {
         ss <- substring(s, pos, len_s)
         match <- match_whitespace(ss)
         if (!anyNA(match) && match[1] == 1) {
-            results[[i]] <- Token$new("S", " ", pos)
+            results[[i]] <- Token("S", " ", pos)
             match_end <- match[2]
             pos <- pos + match_end
             i <- i + 1
@@ -883,7 +1092,7 @@ tokenize <- function(s) {
             match_start <- match[1]
             match_end <- max(match[1], match[2])
             value <- substring(ss, match_start, match_end)
-            results[[i]] <- Token$new("NUMBER", value, pos)
+            results[[i]] <- Token("NUMBER", value, pos)
             pos <- pos + match_end
             i <- i + 1
             next
@@ -893,8 +1102,8 @@ tokenize <- function(s) {
             match_start <- match[1]
             match_end <- max(match[1], match[2])
             value <- substring(ss, match_start, match_end)
-            value <- sub_simple_escape(sub_unicode_escape(value))
-            results[[i]] <- Token$new("IDENT", value, pos)
+            value <- decode_escapes(value)
+            results[[i]] <- Token("IDENT", value, pos)
             pos <- pos + match_end
             i <- i + 1
             next
@@ -904,97 +1113,73 @@ tokenize <- function(s) {
             match_start <- match[1]
             match_end <- max(match[1], match[2])
             value <- substring(ss, match_start, match_end)
-            value <- sub_simple_escape(sub_unicode_escape(value))
+            value <- decode_escapes(value)
             hash_id <- substring(value, 2)
-            results[[i]] <- Token$new("HASH", hash_id, pos)
+            results[[i]] <- Token("HASH", hash_id, pos)
             pos <- pos + match_end
             i <- i + 1
             next
         }
-        # Testing presence of two char delims
-        nc_inds <- seq_len(nchar(ss))
-        if (length(nc_inds) %% 2 == 1)
-            nc_inds <- c(nc_inds, length(nc_inds) + 1)
-        split_ss_2ch <- substring(ss, nc_inds[(nc_inds %% 2) == 1],
-                                      nc_inds[(nc_inds %% 2) == 0])
-        delim_inds_2ch <- which(split_ss_2ch %in% delims_2ch)
-        if (length(delim_inds_2ch) && delim_inds_2ch[1] == 1) {
-            # We have a 2ch delim
-            results[[i]] <- Token$new("DELIM", split_ss_2ch[1], pos)
+        # Testing presence of a two char delim at the current position
+        two_ch <- substring(s, pos, pos + 1)
+        if (two_ch %in% delims_2ch) {
+            results[[i]] <- Token("DELIM", two_ch, pos)
             pos <- pos + 2
             i <- i + 1
             next
         }
 
-        # Testing presence of single char delims
-        split_ss_1ch <- substring(ss, nc_inds, nc_inds)
-        delim_inds_1ch <- which(split_ss_1ch %in% delims_1ch)
-        if (length(delim_inds_1ch) && delim_inds_1ch[1] == 1) {
-            # We have a single char delim
-            results[[i]] <- Token$new("DELIM", split_ss_1ch[1], pos)
+        # Testing presence of a single char delim at the current position
+        ch <- substring(s, pos, pos)
+        if (ch %in% delims_1ch) {
+            results[[i]] <- Token("DELIM", ch, pos)
             pos <- pos + 1
             i <- i + 1
             next
         }
-        quote <- substring(s, pos, pos)
-        if (quote %in% c("'", '"')) {
-            ncs <- nchar(s)
-            split_chars <- substring(s, (pos + 1):ncs, (pos + 1):ncs)
-            matching_quotes <- which(split_chars == quote)
-            is_escaped <- logical(length(matching_quotes))
-            if (length(matching_quotes)) {
-                for (j in seq_along(matching_quotes)) {
-                    end_quote <- matching_quotes[j]
-                    if (end_quote > 1) {
-                        # Count consecutive backslashes before the quote
-                        # If odd number of backslashes, the quote is escaped
-                        backslash_count <- 0
-                        check_pos <- end_quote - 1
-                        while (check_pos >= 1 && split_chars[check_pos] == "\\") {
-                            backslash_count <- backslash_count + 1
-                            check_pos <- check_pos - 1
-                        }
-                        is_escaped[j] <- (backslash_count %% 2) == 1
-                    }
-                }
-                if (all(is_escaped)) {
-                    stop("Unclosed string at ", pos)
-                }
-                end_quote <- matching_quotes[min(which(!is_escaped))]
-                value <- substring(s, pos + 1, pos + end_quote - 1)
-                value <- sub_simple_escape(
-                             sub_unicode_escape(
-                                 sub_newline_escape(value)))
-                results[[i]] <- Token$new("STRING", value, pos)
-                pos <- pos + end_quote + 1 # one for each quote char
-                i <- i + 1
-            } else {
+        if (ch %in% c("'", '"')) {
+            # Match the string content after the opening quote; the
+            # closing quote must follow immediately
+            match <- match_string_by_quote[[ch]](substring(s, pos + 1, len_s))
+            content_end <- if (anyNA(match)) 0 else match[2]
+            end_quote <- pos + 1 + content_end
+            # A string still open at EOF (content consumed to the end
+            # of the input) is auto-closed with the consumed value, as
+            # css-syntax requires; only a string stopped short of EOF
+            # (by a raw newline or a lone trailing backslash) is an
+            # error
+            if (end_quote <= len_s &&
+                substring(s, end_quote, end_quote) != ch) {
                 stop("Unclosed string at ", pos)
             }
+            value <- substring(s, pos + 1, pos + content_end)
+            value <- decode_escapes(value, newlines = TRUE)
+            results[[i]] <- Token("STRING", value, pos)
+            # An auto-closed string has no closing quote to step over,
+            # so the EOF token keeps its position just past the input
+            pos <- min(end_quote, len_s) + 1
+            i <- i + 1
+            next
         }
         # Remove comments
-        pos1 <- pos + 1
-        if (substring(s, pos, pos1) == "/*") {
-            rel_pos <- str_locate(ss, "\\*/")[1]
+        if (two_ch == "/*") {
+            rel_pos <- regexpr("*/", ss, fixed = TRUE)
             pos <-
-                if (is.na(rel_pos)) {
+                if (rel_pos == -1L) {
                     len_s + 1
                 } else {
                     pos + rel_pos + 1
                 }
             next
         }
-        # Because we always call 'next', if we're here there must have
-        # been an error
-        tmp <- substring(ss, 1, 1)
-        if (!tmp %in% c(delims_1ch, '"', "'")) {
-            stop("Unexpected character '",
-                 tmp,
-                 "' found at position ",
-                 pos)
-        }
+        # Every successful match ends in 'next', so reaching here means
+        # the character cannot start any token
+        stop("Unexpected character '",
+             ch,
+             "' found at position ",
+             pos)
     }
-    results[[i]] <- EOFToken$new(pos)
+    results[[i]] <- EOFToken(pos)
     results
 }
 
@@ -1024,9 +1209,16 @@ TokenStream <- R6Class("TokenStream",
             }
         },
         next_token = function() {
-            nt <- self$tokens[[self$pos]]
-            self$pos <- self$pos + 1
-            nt
+            if (self$pos > self$ntokens) {
+                # The trailing EOF token is sticky: consuming it
+                # (e.g. when it auto-closes a construct) must not run
+                # past the token list, as the caller will peek again
+                self$tokens[[self$ntokens]]
+            } else {
+                nt <- self$tokens[[self$pos]]
+                self$pos <- self$pos + 1
+                nt
+            }
         },
         peek = function() {
             if (!self$peeking) {
@@ -1038,7 +1230,7 @@ TokenStream <- R6Class("TokenStream",
         next_ident = function() {
             nt <- self$nxt()
             if (nt$type != "IDENT")
-                stop("Expected ident, got ", nt$repr())
+                stop("Expected ident, got ", token_repr(nt))
             nt$value
         },
         next_ident_or_star = function() {
@@ -1048,7 +1240,7 @@ TokenStream <- R6Class("TokenStream",
             else if (token_equality(nt, "DELIM", "*"))
                 NULL
             else
-                stop("Expected ident or '*', got ", nt$repr())
+                stop("Expected ident or '*', got ", token_repr(nt))
         },
         skip_whitespace = function() {
             peek <- self$peek()

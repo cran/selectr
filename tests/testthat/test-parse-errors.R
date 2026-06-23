@@ -48,17 +48,29 @@ test_that("useful errors are returned", {
                 equals(NULL))
     expect_that(get_error("[rel:stylesheet]"),
                 throws_error("Operator expected, got <DELIM ':' at 5>"))
-    expect_that(get_error("[rel=stylesheet"),
-                throws_error("Expected ']', got <EOF at 16>"))
+    expect_that(get_error("[rel=stylesheet k]"),
+                throws_error("Expected ']', got <IDENT 'k' at 17>"))
+    expect_that(get_error("[rel=stylesheet i i]"),
+                throws_error("Expected ']', got <IDENT 'i' at 19>"))
+    # A case-sensitivity flag requires an operator and value
+    expect_that(get_error("[rel i]"),
+                throws_error("Operator expected, got <IDENT 'i' at 6>"))
     expect_that(get_error(":lang(fr)"),
                 equals(NULL))
-    expect_that(get_error(":lang(fr"),
-                throws_error("Expected an argument, got <EOF at 9>"))
-    expect_that(get_error(':contains("foo'),
-                throws_error("Unclosed string at 11"))
-    expect_that(get_error(':contains("foo\\"'),
-                throws_error("Unclosed string at 11"))
+    # EOF only auto-closes a construct (see below); a missing interior
+    # part still errors, exactly as its closed form would
+    expect_that(get_error("[foo="),
+                throws_error("Expected string or ident, got <EOF at 6>"))
+    expect_that(get_error("["),
+                throws_error("Expected ident or '\\*', got <EOF at 2>"))
+    expect_that(get_error(":lang("),
+                throws_error("Expected at least one argument, got <EOF at 7>"))
+    expect_that(get_error(":is(a,"),
+                throws_error("Expected selector, got <EOF at 7>"))
     expect_that(get_error("foo!"),
+                throws_error("Unexpected character"))
+    # The non-standard != attribute operator is not supported
+    expect_that(get_error("a[rel!=nofollow]"),
                 throws_error("Unexpected character"))
     expect_that(get_error("a:not(b;)"),
                 throws_error("Unexpected character"))
@@ -72,14 +84,76 @@ test_that("useful errors are returned", {
                 throws_error("Got pseudo-element ::before inside :not\\(\\) at 13"))
     expect_that(get_error(":not(a,)"),
                 throws_error("Expected ')', got .*"))
-    expect_that(get_error(":not(:not(a))"),
-                throws_error("Got nested :not()"))
     expect_that(get_error(":is(:before)"),
                 throws_error("Got pseudo-element ::before inside :is\\(\\) at 12"))
-    expect_that(get_error(":is(a b)"),
-                throws_error("Expected an argument, got <IDENT 'b' at 7>"))
     expect_that(get_error(":matches(:before)"),
                 throws_error("Got pseudo-element ::before inside :matches\\(\\) at 17"))
-    expect_that(get_error(":matches(a b)"),
-                throws_error("Expected an argument, got <IDENT 'b' at 12>"))
+    # pseudo-elements are rejected anywhere in a complex argument
+    expect_that(get_error(":is(a:before b)"),
+                throws_error("Got pseudo-element ::before inside :is\\(\\)"))
+    expect_that(get_error(":is(a b:before)"),
+                throws_error("Got pseudo-element ::before inside :is\\(\\)"))
+    # trailing combinators in arguments
+    expect_that(get_error(":is(a >)"),
+                throws_error("Expected selector, got <DELIM '\\)' at 8>"))
+})
+
+test_that("constructs unclosed at EOF translate as their closed forms", {
+    # css-syntax-3 auto-closes open blocks, functions, and strings at
+    # EOF: the parse error is flagged, not fatal, and browsers accept
+    # these selectors
+    eof <- function(unclosed, closed) {
+        for (translator in c("generic", "html", "xhtml")) {
+            expect_that(css_to_xpath(unclosed, translator = translator),
+                        equals(css_to_xpath(closed, translator = translator)))
+        }
+    }
+
+    eof("[rel", "[rel]")
+    eof("[rel=stylesheet", "[rel=stylesheet]")
+    eof("[rel=stylesheet i", "[rel=stylesheet i]")
+    eof('[foo="bar', '[foo="bar"]')
+    eof('[foo="', '[foo=""]')
+    eof(":lang(fr", ":lang(fr)")
+    eof(":nth-child(2n+1", ":nth-child(2n+1)")
+    eof(":is(a", ":is(a)")
+    eof("e:is(a, b", "e:is(a, b)")
+    eof(":not(a", ":not(a)")
+    eof(":has(> a", ":has(> a)")
+    # An ident ending in an escaped backslash, then an unclosed
+    # attribute block: tokenizes as <IDENT 'di\'> <DELIM '['>
+    # <IDENT 'v'> and auto-closes to an existence test
+    eof("di\\\\[v", "di\\\\[v]")
+    # The unclosed string is auto-closed at parse time; the
+    # pseudo-class is then rejected at translation time either way
+    expect_error(css_to_xpath(':contains("foo'),
+                 "The pseudo-class :contains\\(\\) is unknown")
+})
+
+test_that("unsupported column constructs are rejected by name", {
+    # The Selectors 4 column combinator and column pseudo-classes
+    # depend on table-layout arithmetic that XPath 1.0 cannot express;
+    # the combinator is named in its parse error rather than falling
+    # through to a stray-token message
+    expect_error(css_to_xpath("a || b"),
+                 "The column combinator '||' is not supported",
+                 fixed = TRUE)
+    expect_error(css_to_xpath("a||b"),
+                 "The column combinator '||' is not supported",
+                 fixed = TRUE)
+
+    # The unknown-pseudo-class error keeps the user's hyphenated
+    # spelling (not the method-ised ':nth_col()')
+    expect_error(css_to_xpath("e:nth-col(2)"),
+                 "The pseudo-class :nth-col() is unknown",
+                 fixed = TRUE)
+    expect_error(css_to_xpath("e:nth-last-col(2)"),
+                 "The pseudo-class :nth-last-col() is unknown",
+                 fixed = TRUE)
+
+    # Single-pipe namespace syntax is unaffected
+    expect_that(css_to_xpath("*|b", prefix = ""),
+                equals("*[local-name() = 'b']"))
+    expect_that(css_to_xpath("|b", prefix = ""),
+                equals("b"))
 })

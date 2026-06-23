@@ -2,7 +2,7 @@ context("tokenizer")
 
 test_that("tokenizer extracts correct representation", {
     tokens <- tokenize('E > f [a~="y\\"x"]:nth(/* fu /]* */-3.7)')
-    tokens <- unlist(lapply(tokens, function(x) x$repr()))
+    tokens <- unlist(lapply(tokens, token_repr))
     expected_tokens <- c("<IDENT 'E' at 1>",
                          "<S ' ' at 2>",
                          "<DELIM '>' at 3>",
@@ -21,4 +21,68 @@ test_that("tokenizer extracts correct representation", {
                          "<DELIM ')' at 39>",
                          "<EOF at 40>")
     expect_that(tokens, equals(expected_tokens))
+})
+
+test_that("unicode escapes are decoded in idents, hashes, and strings", {
+    reprs <- function(css) {
+        unlist(lapply(tokenize(css), token_repr))
+    }
+
+    # '\31 ' is U+0031, i.e. '1' -- the only way to write an ID
+    # beginning with a digit
+    expect_that(reprs("#\\31 23"),
+                equals(c("<HASH '123' at 1>", "<EOF at 8>")))
+    expect_that(reprs("\\31 23"),
+                equals(c("<IDENT '123' at 1>", "<EOF at 7>")))
+    expect_that(reprs("x\\79 z"),
+                equals(c("<IDENT 'xyz' at 1>", "<EOF at 7>")))
+    # Hex digits in escapes are case-insensitive
+    expect_that(reprs("'\\4a b'"),
+                equals(c("<STRING 'Jb' at 1>", "<EOF at 8>")))
+    expect_that(reprs("'\\4A b'"),
+                equals(c("<STRING 'Jb' at 1>", "<EOF at 8>")))
+    # A whitespace terminator is consumed even after six hex digits
+    expect_that(reprs("'\\00004a b'"),
+                equals(c("<STRING 'Jb' at 1>", "<EOF at 12>")))
+    # Simple escapes of delimiters still work
+    expect_that(reprs("di\\[v"),
+                equals(c("<IDENT 'di[v' at 1>", "<EOF at 6>")))
+    expect_that(reprs("#a\\[b"),
+                equals(c("<HASH 'a[b' at 1>", "<EOF at 6>")))
+})
+
+test_that("string tokens handle quotes, escapes, and unclosed strings", {
+    reprs <- function(css) {
+        unlist(lapply(tokenize(css), token_repr))
+    }
+
+    expect_that(reprs("''"),
+                equals(c("<STRING '' at 1>", "<EOF at 3>")))
+    expect_that(reprs("'a''b'"),
+                equals(c("<STRING 'a' at 1>", "<STRING 'b' at 4>",
+                         "<EOF at 7>")))
+    # The other quote character is just content
+    expect_that(reprs("'\"'"),
+                equals(c("<STRING '\"' at 1>", "<EOF at 4>")))
+    # Escaped quotes do not close the string
+    expect_that(reprs("'a\\'b'"),
+                equals(c("<STRING 'a'b' at 1>", "<EOF at 7>")))
+    # An escaped backslash does not escape a following quote
+    expect_that(reprs("'a\\\\'"),
+                equals(c("<STRING 'a\\' at 1>", "<EOF at 6>")))
+
+    # A string still open at EOF is auto-closed with its consumed
+    # value (css-syntax), including when the consumed value ends with
+    # an escaped quote
+    expect_that(reprs("'abc"),
+                equals(c("<STRING 'abc' at 1>", "<EOF at 5>")))
+    expect_that(reprs("a'"),
+                equals(c("<IDENT 'a' at 1>", "<STRING '' at 2>",
+                         "<EOF at 3>")))
+    expect_that(reprs("'a\\'"),
+                equals(c("<STRING 'a'' at 1>", "<EOF at 5>")))
+    # A raw newline may not appear in a string, and stops it short of
+    # EOF, so it is not auto-closed
+    expect_error(tokenize("'a\nb'"), "Unclosed string at 1")
+    expect_error(tokenize("'a\n"), "Unclosed string at 1")
 })

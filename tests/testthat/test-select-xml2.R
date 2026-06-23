@@ -123,10 +123,6 @@ test_that("selection works correctly on a large barrage of tests", {
     expect_that(pcss('li:empty'), equals(c('third-li', 'fourth-li', 'fifth-li', 'sixth-li')))
     expect_that(pcss(':root', 'html:root'), equals('html'))
     expect_that(pcss('li:root', '* :root'), equals(NULL))
-    expect_that(pcss('*:contains("link")', ':CONtains("link")'), equals(c('html', 'nil', 'outer-div', 'tag-anchor', 'nofollow-anchor')))
-    expect_that(pcss('*:contains("LInk")'), equals(NULL))  # case sensitive
-    expect_that(pcss('*:contains("e")'), equals(c('html', 'nil', 'outer-div', 'first-ol', 'first-li', 'paragraph', 'p-em')))
-    expect_that(pcss('*:contains("E")'), equals(NULL))  # case-sensitive
     expect_that(pcss('.a', c('.b', '*.a', 'ol.a')), equals('first-ol'))
     expect_that(pcss('.c', '*.c'), equals(c('first-ol', 'third-li', 'fourth-li')))
     expect_that(pcss('ol *.c', c('ol li.c', 'li ~ li.c', 'ol > li.c')), equals(c('third-li', 'fourth-li')))
@@ -145,6 +141,9 @@ test_that("selection works correctly on a large barrage of tests", {
     expect_that(pcss(':not(*)'), equals(NULL))
     expect_that(pcss('a:not([href])'), equals('name-anchor'))
     expect_that(pcss('ol :Not(li[class])'), equals(c('first-li', 'second-li', 'li-div', 'fifth-li', 'sixth-li', 'seventh-li')))
+    expect_that(pcss('a:not(:not([href]))', 'a[href]'), equals(c('tag-anchor', 'nofollow-anchor')))
+    expect_that(pcss('li:is(:not([class]))'), equals(c('first-li', 'second-li', 'fifth-li', 'sixth-li', 'seventh-li')))
+    expect_that(pcss('ol:has(:not(li))'), equals('first-ol'))
 
     expect_that(pcss(':is(#first-li, #second-li)'), equals(c('first-li', 'second-li')))
     expect_that(pcss('a:is(#name-anchor, #tag-anchor)'), equals(c('name-anchor', 'tag-anchor')))
@@ -152,10 +151,32 @@ test_that("selection works correctly on a large barrage of tests", {
     expect_that(pcss(':matches(#first-li, #second-li)'), equals(c('first-li', 'second-li')))
     expect_that(pcss('a:matches(#name-anchor, #tag-anchor)'), equals(c('name-anchor', 'tag-anchor')))
     expect_that(pcss(':matches(.c)'), equals(c('first-ol', 'third-li', 'fourth-li')))
+    # :is()/:where() alternatives stay grouped: they AND with conditions
+    # before and after the pseudo-class instead of OR-ing across the compound
+    expect_that(pcss('li.c:is(#third-li, #fifth-li)'), equals('third-li'))
+    expect_that(pcss('li.c:where(#third-li, #fifth-li)'), equals('third-li'))
+    expect_that(pcss(':is(li, ol):first-child'), equals('first-li'))
+    expect_that(pcss('li:is(.c):is(#fourth-li)'), equals('fourth-li'))
+    # An always-true '*' argument makes the whole selector list match
+    # everything; it must not be silently dropped
+    expect_that(pcss('li:is(#first-li, *)'), equals(c('first-li', 'second-li', 'third-li', 'fourth-li', 'fifth-li', 'sixth-li', 'seventh-li')))
+    expect_that(pcss('li:not(#first-li, *)'), equals(NULL))
+    expect_that(pcss('ol:nth-child(6 of a, *)'), equals('second-ol'))
 
     expect_that(pcss('ol:has(li)'), equals('first-ol'))
     # :has(.c) matches all ancestors of elements with class 'c'
     expect_that(pcss(':has(.c)'), equals(c('html', 'nil', 'outer-div', 'first-ol')))
+
+    # Complex selectors inside functional pseudo-classes (selectors-4)
+    expect_that(pcss(':is(ol li)'), equals(c('first-li', 'second-li', 'third-li', 'fourth-li', 'fifth-li', 'sixth-li', 'seventh-li')))
+    expect_that(pcss(':is(#outer-div > a)'), equals(c('name-anchor', 'tag-anchor', 'nofollow-anchor')))
+    expect_that(pcss(':is(a + a)'), equals(c('tag-anchor', 'nofollow-anchor')))
+    expect_that(pcss(':is(a ~ ol)'), equals(c('first-ol', 'second-ol')))
+    expect_that(pcss('li:not(ol li)'), equals(NULL))
+    expect_that(pcss(':where(ol > li)'), equals(c('first-li', 'second-li', 'third-li', 'fourth-li', 'fifth-li', 'sixth-li', 'seventh-li')))
+    expect_that(pcss('div:has(ol li)'), equals('outer-div'))
+    expect_that(pcss(':has(> li + li)'), equals('first-ol'))
+    expect_that(pcss('li:nth-child(2 of ol li)'), equals('second-li'))
 
     # Invalid characters in XPath element names, should not crash
     expect_that(pcss('di\ua0v', 'div\\['), equals(NULL))
@@ -167,4 +188,117 @@ test_that("selection works correctly on a large barrage of tests", {
     expect_that(pcss(':enabled', html_only = TRUE), equals(c('link-href', 'tag-anchor', 'nofollow-anchor', 'checkbox-unchecked', 'text-checked', 'checkbox-checked', 'area-href')))
     expect_that(pcss(':disabled', html_only = TRUE), equals(c('checkbox-disabled', 'checkbox-disabled-checked', 'fieldset', 'checkbox-fieldset-disabled')))
     expect_that(pcss(':checked', html_only = TRUE), equals(c('checkbox-checked', 'checkbox-disabled-checked')))
+})
+
+test_that("of-type pseudo-classes work on unsafe element names", {
+    library(xml2)
+    doc <- read_xml(paste0('<r><é id="first"/><b id="b"/>',
+                           '<é id="second"/><x id="only"/></r>'))
+    ids <- function(css) {
+        result <- unlist(lapply(querySelectorAll(doc, css), xml_attr, "id"))
+        if (is.null(result)) NULL else result
+    }
+
+    expect_that(ids('é:first-of-type'), equals('first'))
+    expect_that(ids('é:last-of-type'), equals('second'))
+    expect_that(ids('é:nth-of-type(2)'), equals('second'))
+    expect_that(ids('é:nth-last-of-type(2)'), equals('first'))
+    expect_that(ids('é:only-of-type'), equals(NULL))
+    expect_that(ids('x:only-of-type'), equals('only'))
+})
+
+test_that(":only-child and :only-of-type match the root element", {
+    library(xml2)
+    doc <- read_xml("<root><a/></root>")
+    count <- function(css)
+        length(xml_find_all(doc, css_to_xpath(css)))
+
+    # :only-child is defined as :first-child:last-child, which matches
+    # the root element, so :only-child must match it too
+    expect_that(count('root:first-child:last-child'), equals(1))
+    expect_that(count('root:only-child'), equals(1))
+    expect_that(count('root:only-of-type'), equals(1))
+    expect_that(count('a:only-child'), equals(1))
+    expect_that(count('a:only-of-type'), equals(1))
+})
+
+test_that(":enabled and :disabled match inputs with no type attribute", {
+    library(xml2)
+    doc <- read_html(paste0('<form>',
+                            '<input id="plain-disabled" disabled="" />',
+                            '<input id="plain-enabled" />',
+                            '<input type="hidden" id="hidden-disabled" disabled="" />',
+                            '<input type="hidden" id="hidden-plain" />',
+                            '</form>'))
+    ids <- function(css) {
+        xpath <- css_to_xpath(css, translator = "html")
+        result <- unlist(lapply(xml_find_all(doc, xpath), xml_attr, "id"))
+        if (is.null(result)) NULL else result
+    }
+
+    # An <input> with no type attribute defaults to type=text, so it should
+    # participate in :enabled/:disabled; type=hidden inputs never do.
+    expect_that(ids('input:disabled'), equals('plain-disabled'))
+    expect_that(ids('input:enabled'), equals('plain-enabled'))
+})
+
+test_that("form pseudo-classes fold @type case-insensitively", {
+    library(xml2)
+    # type is an enumerated attribute whose keywords match ASCII
+    # case-insensitively; an HTML parser preserves the attribute value,
+    # so uppercase spellings must still be recognised
+    doc <- read_html(paste0('<form>',
+                            '<input id="radio-up" type="RADIO" checked="checked" />',
+                            '<input id="check-up" type="CheckBox" checked="checked" />',
+                            '<input id="hidden-up" type="HIDDEN" disabled="disabled" />',
+                            '<input id="text-up" type="TEXT" disabled="disabled" />',
+                            '<input id="hidden-req" type="Hidden" required="required" />',
+                            '<input id="text-req" type="Text" required="required" />',
+                            '</form>'))
+    ids <- function(css) {
+        xpath <- css_to_xpath(css, translator = "html")
+        result <- unlist(lapply(xml_find_all(doc, xpath), xml_attr, "id"))
+        if (is.null(result)) NULL else result
+    }
+
+    # type=RADIO / type=CheckBox are checkable controls
+    expect_that(ids('input:checked'), equals(c('radio-up', 'check-up')))
+    # type=HIDDEN is excluded from :disabled, the uppercase text input is not
+    expect_that(ids('input:disabled'), equals('text-up'))
+    # likewise type=Hidden cannot be :required
+    expect_that(ids('input:required'), equals('text-req'))
+})
+
+test_that(":disabled/:enabled honour the disabled-fieldset legend carve-out", {
+    library(xml2)
+    # A disabled <fieldset> disables its descendant controls except those
+    # inside its first <legend> child. Nested disabled fieldsets still
+    # disable a control protected by only one legend
+    doc <- read_html(paste0(
+        '<form>',
+        '<fieldset disabled="disabled">',
+        '<legend><input id="in-legend" /></legend>',
+        '<input id="in-body" />',
+        '<legend><input id="second-legend" /></legend>',
+        '</fieldset>',
+        '<fieldset disabled="disabled">',
+        '<legend>',
+        '<fieldset disabled="disabled">',
+        '<input id="nested-in-body" />',
+        '</fieldset>',
+        '</legend>',
+        '</fieldset>',
+        '</form>'))
+    ids <- function(css) {
+        xpath <- css_to_xpath(css, translator = "html")
+        result <- unlist(lapply(xml_find_all(doc, xpath), xml_attr, "id"))
+        if (is.null(result)) NULL else result
+    }
+
+    # Inside the first legend: enabled. In the body or a second legend:
+    # disabled. The nested input has two disabled-fieldset ancestors but
+    # only one protecting legend, so it stays disabled
+    expect_that(ids('input:disabled'),
+                equals(c('in-body', 'second-legend', 'nested-in-body')))
+    expect_that(ids('input:enabled'), equals('in-legend'))
 })

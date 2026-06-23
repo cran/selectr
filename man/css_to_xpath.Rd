@@ -39,12 +39,75 @@ css_to_xpath(selector,
   default or \code{""}, unless it is known what scope a particular XPath
   expression should have.
 
+  A selector starting with the \code{:scope} pseudo-class is anchored
+  at the node the expression is evaluated from: the \code{prefix}
+  argument is ignored and the expression begins with the XPath
+  \code{self} axis instead. For example, \code{":scope > a"} translates
+  to \code{"self::*/a"}, matching only the \code{a} children of the
+  queried node, and a bare \code{":scope"} translates to
+  \code{"self::*"}, matching the queried node itself. \code{:scope}
+  anywhere else in a selector (after a combinator, or within a
+  functional pseudo-class such as \code{:is()} or \code{:has()}) cannot
+  be expressed in XPath 1.0 and is an error.
+
+  The of-type pseudo-classes (\code{:first-of-type},
+  \code{:last-of-type}, \code{:only-of-type}, \code{:nth-of-type()} and
+  \code{:nth-last-of-type()}) are only supported when their compound
+  selector names an element, as in \code{"p:first-of-type"}. Applied to
+  the universal selector, as in \code{"*:first-of-type"}, they would
+  have to compare each sibling's name against the matched element's own
+  name, which XPath 1.0 cannot express, so the translation is an
+  error. The Python \sQuote{cssselect} library, from which selectr is
+  ported, has the same limitation.
+
+  The Selectors 4 column combinator (\code{"a || b"}) and the column
+  pseudo-classes \code{:nth-col()} and \code{:nth-last-col()} are also
+  not supported: which column a cell belongs to depends on table-layout
+  arithmetic (\code{colspan}/\code{rowspan} carry-over) that XPath 1.0
+  cannot express. Both are rejected with an error.
+
+  \code{:empty} deliberately keeps the Selectors 3 semantics that all
+  current browsers implement: an element containing only white space,
+  such as \code{<p> </p>}, does not match. (The Selectors 4
+  specification loosened \code{:empty} to also match
+  white-space-only elements, but no browser has shipped that change.)
+
+  \code{:lang()} ranges are matched as RFC 4647 language ranges, so a
+  wildcard may appear as a whole range (\code{:lang(*)}), as a trailing
+  subtag (\code{:lang(en-*)}), or in a non-trailing position
+  (\code{:lang(*-CH)}, \code{:lang(de-*-DE)}; quoted or not), the last of
+  these being RFC 4647 extended filtering. The \code{html} and
+  \code{xhtml} translators approximate a non-trailing wildcard from the
+  nearest \code{lang}-attributed ancestor (an element matches
+  \code{:lang(*-CH)} when its language tag carries a \code{CH} subtag in
+  any position). The generic translator has only XPath's \code{lang()}
+  function, which cannot express extended filtering, so there a
+  non-trailing wildcard is rejected with an error rather than silently
+  mis-matching.
+
+  \code{:dir()} translates to a never-matching expression with every
+  translator, including \code{html}: an element's resolved
+  directionality also depends on \code{dir="auto"}, \code{bdi}, and
+  form-control rules that a static document cannot answer, so unlike
+  \code{:lang()} it is not approximated from ancestor attributes.
+
   The translator used is usually unnecessary to specify as the default
   is sufficient for most cases. However, it is of use when creating
   expressions relating to (X)HTML pseudo elements and languages. In
   particular it qualifies the following pseudo selectors to apply only
   to relevant (X)HTML elements: \code{:checked}, \code{:disabled},
-  \code{:enabled} and \code{:link}.
+  \code{:enabled}, \code{:link}, \code{:optional} and \code{:required}.
+  Because \code{type} is an HTML enumerated attribute, the
+  form-state pseudo-classes match its keywords ASCII
+  case-insensitively, so \code{<input type="RADIO">} is \code{:checked}
+  and \code{<input type="HIDDEN">} is excluded from \code{:disabled}
+  just as their lower-case spellings are. An \code{<input>} with no
+  \code{type} defaults to text and so participates in
+  \code{:enabled}/\code{:disabled}. A disabled \code{<fieldset>}
+  disables its descendant form controls for \code{:disabled} and
+  \code{:enabled}, except those inside its first \code{<legend>} child,
+  which stay \code{:enabled}; nested disabled fieldsets are handled
+  correctly.
 
   When the translator is set to \code{html}, all elements and
   attributes will be converted to lower case. This restriction is
@@ -65,5 +128,6 @@ css_to_xpath(selector,
   css_to_xpath(".testclass")
   css_to_xpath("#testid", prefix = "")
   css_to_xpath("#testid .testclass")
+  css_to_xpath(":scope > .testclass")
   css_to_xpath(":checked", translator = "html")
 }

@@ -26,3 +26,57 @@ test_that("parser generates correct series", {
     expect_that(series("foo"), equals(NULL))
     expect_that(series("n+"), equals(NULL))
 })
+
+test_that("series are parsed case-insensitively", {
+    xpath <- function(css) css_to_xpath(paste0("e:nth-child(", css, ")"))
+
+    expect_that(xpath("2N"), equals(xpath("2n")))
+    expect_that(xpath("ODD"), equals(xpath("odd")))
+    expect_that(xpath("EVEN"), equals(xpath("even")))
+    expect_that(xpath("Odd"), equals(xpath("odd")))
+    expect_that(xpath("eVen"), equals(xpath("even")))
+    expect_that(xpath("N"), equals(xpath("n")))
+    expect_that(xpath("N+1"), equals(xpath("n+1")))
+    expect_that(xpath("-N+3"), equals(xpath("-n+3")))
+    expect_that(xpath("2N+1"), equals(xpath("2n+1")))
+    expect_that(css_to_xpath("e:nth-last-of-type(2N)"),
+                equals(css_to_xpath("e:nth-last-of-type(2n)")))
+
+    # Genuinely invalid input must still error
+    expect_error(css_to_xpath("e:nth-child(2x)"))
+    expect_error(css_to_xpath("e:nth-child(odds)"))
+    expect_error(css_to_xpath("e:nth-child(m+1)"))
+})
+
+test_that("whitespace is only permitted around the sign before B", {
+    # spec-legal placements keep working
+    expect_that(css_to_xpath("e:nth-child(2n + 1)"),
+                equals(css_to_xpath("e:nth-child(2n+1)")))
+    expect_that(css_to_xpath("e:nth-child(2n +1)"),
+                equals(css_to_xpath("e:nth-child(2n+1)")))
+    expect_that(css_to_xpath("e:nth-child(n+ 1)"),
+                equals(css_to_xpath("e:nth-child(n+1)")))
+    expect_that(css_to_xpath("e:nth-child( 2n+1 )"),
+                equals(css_to_xpath("e:nth-child(2n+1)")))
+    # whitespace anywhere else is invalid (css-syntax-3 An+B grammar)
+    expect_error(css_to_xpath("e:nth-child(3 7)"))
+    expect_error(css_to_xpath("e:nth-child(2 n)"))
+    expect_error(css_to_xpath("e:nth-child(2n 1)"))
+    expect_error(css_to_xpath("e:nth-child(2n+1 3)"))
+    expect_error(css_to_xpath("e:nth-child(2 n + 1)"))
+    expect_error(css_to_xpath("e:nth-child(- n)"))
+    expect_error(css_to_xpath("e:nth-child(+ 2n)"))
+    expect_error(css_to_xpath("e:nth-child(o dd)"))
+})
+
+test_that("non-integer A and B values are rejected", {
+    # An+B takes <integer> values only; these must not be truncated
+    expect_error(css_to_xpath("e:nth-child(2.5)"))
+    expect_error(css_to_xpath("e:nth-child(1.9)"))
+    expect_error(css_to_xpath("e:nth-child(2e1)"))
+    expect_error(css_to_xpath("e:nth-child(2.5n+1)"))
+    expect_error(css_to_xpath("e:nth-child(2n+1.5)"))
+    # signed integers and leading zeros remain valid
+    expect_that(css_to_xpath("e:nth-child(+05)"),
+                equals(css_to_xpath("e:nth-child(5)")))
+})
