@@ -2,6 +2,367 @@
 \title{NEWS file for the selectr package}
 \encoding{UTF-8}
 
+\section{Changes in version 0.7-0}{
+  \subsection{NEW FEATURES}{
+    \itemize{
+
+      \item The \code{querySelector()} family now accepts a set of
+      nodes, so queries can be chained: the \pkg{xml2}
+      \code{xml_nodeset} or \pkg{XML} \code{XMLNodeSet} returned by one
+      call can be passed to the next. The selector is evaluated from
+      each node in turn, and a node matching from more than one of them
+      is returned once, at the position it first matched.
+
+      \item The \code{querySelector()} family now uses the \code{html}
+      translator by default for documents parsed as HTML (by
+      \code{XML::htmlParse()} or \code{xml2::read_html()}), so names
+      match case-insensitively and \code{:checked}, \code{:disabled},
+      \code{:link} and \code{:lang()} behave as in a browser without
+      passing \code{translator = "html"}. An explicit \code{translator}
+      still wins, and the choice carries through a chain of queries.
+
+      \item An \pkg{xml2} \code{xml_missing}, as returned by a failed
+      \code{xml_find_first()}, is now accepted by the
+      \code{querySelector()} family and yields no matches rather than an
+      error.
+
+      \item A new \code{?selectors} help topic documents every selector,
+      combinator and pseudo-class selectr understands, which translators
+      support each, and where the implementation diverges from CSS
+      Selectors Level 4.
+
+      \item The \code{html} and \code{xhtml} translators now support
+      \code{:read-write}, \code{:read-only}, \code{:placeholder-shown}
+      and \code{:default}, which were previously unknown; on the
+      \code{generic} translator they never match. Pseudo-classes needing
+      live document state, such as \code{:indeterminate}, remain
+      unknown.
+
+    }
+  }
+  \subsection{MINOR CHANGES}{
+    \itemize{
+
+      \item Parse errors now include a source-pointer block showing the
+      selector with a caret (\code{^}) beneath the offending character,
+      aligned correctly across tabs and wide characters.
+
+      \item Parse, translation and argument errors are now structured
+      conditions inheriting a common \code{selectr_error} class, so
+      callers need not match on message text:
+      \code{selectr_parse_error} (fields \code{$selector},
+      \code{$pos}), \code{selectr_translation_error} (fields
+      \code{$selector}, \code{$feature} and \code{$pos}/\code{$column}),
+      and \code{selectr_argument_error}. Message text is unchanged.
+
+      \item A reported position - \code{$pos} and the caret - now points
+      at the token the message names rather than wherever the parser
+      stopped; for example the caret under \code{"a||b"} sits on the
+      first \code{|}, and under \code{"a:before:empty"} on the
+      \code{:before} called misplaced.
+
+      \item The minimum required version of R has been increased from
+      \code{3.3} to \code{3.6}, required by \code{errorCondition()}.
+
+      \item \code{css_to_xpath()} now signals an error when
+      \code{selector}, \code{prefix} or \code{translator} have lengths
+      that are not all 1 or the common (maximum) length, instead of
+      recycling and silently mispairing them.
+
+      \item Generated XPath expressions are shorter and cheaper to
+      evaluate, with no change to the node set selected. Pseudo-class
+      translations drop disjuncts ruled out by the compound's element
+      name (prefixed and \code{*|}-qualified compounds included), name
+      the element before testing anything else of it, factor out
+      conditions every disjunct shares, and write enumerated
+      attribute-value sets as a single \code{contains()}; a compound
+      holding a never-matching simple selector folds to \code{[0]}
+      alone; and a condition or selector-list branch repeating an
+      earlier one exactly is kept once (\code{":is(a, a)"} gives
+      \code{"*[self::a]"}). Code comparing \code{css_to_xpath()} output
+      against stored strings will need updating.
+
+      \item Arithmetic in the generated XPath now has a space on both
+      sides of the operator (\code{"(count(preceding-sibling::*) + 2)"},
+      \code{"string-length(@href) - 2"}). The XPath is unchanged in
+      meaning, but the string differs.
+
+      \item Translating long selectors is measurably faster: the
+      tokenizer matches against a bounded window of the remaining input
+      rather than re-slicing it per token, and translator instances are
+      cached and reused. The test suite has been migrated to testthat
+      edition 3.
+
+      \item \code{querySelector()} no longer finds every match to return
+      the first: it asks XPath for the first node directly on \pkg{XML}
+      inputs, and stops at the first matching node of an
+      \code{xml_nodeset}. The node returned is unchanged.
+
+    }
+  }
+  \subsection{BUG FIXES}{
+    \itemize{
+
+      \item The \code{html} translator now compares the values of the
+      attributes HTML defines as ASCII case-insensitive (\code{type},
+      \code{rel}, \code{lang}, \code{dir}, ... - the list in HTML's
+      "Case-sensitivity of selectors") without regard to case, as a
+      browser does, so \code{"input[type=radio]"} selects
+      \code{<input type="RADIO">}. A trailing \code{s} flag asks for the
+      exact comparison back. \code{class}, \code{id}, \code{href},
+      \code{name}, \code{data-*}, namespaced attributes and the
+      \code{generic}/\code{xhtml} translators are unaffected.
+
+      \item The \code{html} translator now lowercases element and
+      attribute names by folding \code{A}-\code{Z} only, as an HTML
+      parser does. \code{tolower()} also mapped non-ASCII letters, and
+      by locale, so a selector such as \code{"\\C4"} became a name test
+      no document could match.
+
+      \item \code{:placeholder-shown} now requires a non-empty
+      \code{placeholder} and, for \code{<input>}, a \code{type} the
+      attribute applies to (so not \code{checkbox}, \code{date},
+      \code{submit}, ...); both previously matched.
+
+      \item An \code{<input>} of type \code{range}, \code{color},
+      \code{submit}, \code{image}, \code{reset} or \code{button} is now
+      neither \code{:required} nor \code{:optional} under the
+      \code{html} and \code{xhtml} translators, joining
+      \code{type="hidden"}, since \code{required} does not apply to
+      them.
+
+      \item A large \code{An+B} value is now written into the generated
+      XPath in full. Values of five or more digits used R's default
+      number printing, so \code{css_to_xpath(":nth-child(100001)")}
+      produced \code{"... = 1e+05"}, which XPath 1.0 has no syntax for
+      (libxml2 accepted it, so matches were correct but not portable).
+
+      \item An \code{A} or \code{B} too large for an R integer (e.g.
+      \code{":nth-child(99999999999)"}) is now saturated to
+      \code{.Machine$integer.max} instead of raising an error; no
+      document has that many siblings, so the clamped series selects
+      the same nodes.
+
+      \item The \code{html}-qualified pseudo-classes (\code{:checked},
+      \code{:disabled}, \code{:enabled}, \code{:link}/\code{:any-link},
+      \code{:optional}, \code{:required}) now identify elements by local
+      name, matching the \code{xhtml} translator's rule for type
+      selectors; previously they matched nothing, or the wrong
+      elements, on a namespaced document. The \code{html} translator is
+      unaffected in practice.
+
+      \item \code{querySelectorNS()} and \code{querySelectorAllNS()} now
+      search only within the node given, as their un-namespaced
+      counterparts do: the namespace filter was an absolute path
+      (\code{//svg:*}) and is now relative
+      (\code{descendant-or-self::svg:*}). Queries from a document are
+      unaffected.
+
+      \item A selector with a long chain of combinators is now
+      translated by walking the parse tree in a loop rather than
+      recursively; beyond a few hundred combinators these failed with
+      "evaluation nested too deeply". Deeply nested functional
+      pseudo-classes (e.g. hundreds of \code{:not()}) now raise a
+      \code{selectr_translation_error} instead of letting the base R
+      error escape.
+
+      \item An unusually long selector is now translated without being
+      cached, rather than failing with "variable names are limited to
+      10000 bytes" - the translation cache keys are R symbols.
+
+      \item A backslash at the very end of a selector is now decoded per
+      css-syntax instead of raising an error: in an identifier or hash
+      name it becomes U+FFFD, and inside an open string it is dropped
+      and the string auto-closed.
+
+      \item A unicode escape decoding to a null, surrogate or
+      out-of-range code point (e.g. \code{"\\0"}, \code{"\\D800"},
+      \code{"\\110000"}) now yields U+FFFD as css-syntax requires,
+      instead of \code{NA} or an empty string.
+
+      \item \code{An+B} expressions are now validated while parsing, so
+      a malformed value is reported with a source position and names the
+      pseudo-class it appeared in.
+
+      \item \code{An+B} expressions are now read from tokens rather than
+      decoded text, so a digit written as an escape is no longer taken
+      for an integer: \code{":nth-child(\\32 )"} and friends are
+      rejected as browsers reject them. Escapes spelling letters are
+      unaffected (\code{":nth-child(\\65 ven)"} is still \code{"even"}).
+
+      \item A number with an identifier written straight onto it is now
+      the single \code{<dimension-token>} css-syntax makes it, so
+      \code{":nth-child(2n+1of b)"} and \code{":nth-child(1of b)"} are
+      rejected as browsers reject them. The spelling with a space, and
+      dimensions \code{An+B} does admit (\code{"2n+1"}, \code{"2n-1"}),
+      are unaffected.
+
+      \item An ID selector's hash must now be identifier-shaped:
+      \code{"#1"}, other hashes starting with a digit or \code{-} plus a
+      digit, and a lone \code{"#-"} are rejected with a hint on
+      escaping, instead of being silently mistranslated.
+
+      \item A lone \code{-} is now a delimiter rather than a name, so
+      \code{"-"}, \code{"a - b"} and \code{".-"} are rejected instead of
+      translated into an expression nothing can match. Names that do
+      start with \code{-} (\code{"-a"}, \code{"--a"}, \code{"--"},
+      \code{"\\-"}) are unaffected, as is the sign in
+      \code{":nth-child(2n - 1)"}.
+
+      \item \code{-->} and \code{<!--} are now read as the single CDC
+      and CDO tokens CSS makes them and rejected whole at their starting
+      position. A \code{-->} inside a name is unchanged, so
+      \code{"a-->b"} still selects a \code{b} child of an \code{a--}.
+
+      \item An empty \code{:is()} or \code{:where()} argument list is
+      now accepted per its \code{<forgiving-selector-list>} grammar and
+      matches nothing, instead of raising a parse error.
+
+      \item \code{:lang()} ranges must now be comma-separated;
+      whitespace alone (\code{":lang(en fr)"}) is no longer a separator.
+      Multi-token wildcard ranges such as \code{":lang(*-CH)"} are
+      unaffected.
+
+      \item \code{:lang(*)} now matches only elements whose language is
+      known - one inheriting a non-empty \code{lang} or \code{xml:lang}
+      - instead of every element.
+
+      \item The \code{xhtml} translator's \code{:lang()} now also reads
+      \code{xml:lang}, preferring it over \code{lang} on the nearest
+      declaring ancestor-or-self, per HTML's language-determination
+      rules.
+
+      \item An \code{<option>} in a disabled \code{<optgroup>}, and an
+      \code{<optgroup>} or \code{<option>} whose nearest ancestor
+      \code{<select>} is disabled, are now \code{:disabled} under the
+      \code{html} and \code{xhtml} translators without an attribute of
+      their own, per HTML's "actually disabled". The walk stops where
+      the standard stops, so an \code{<option>} in a \code{<datalist>}
+      stays \code{:enabled}.
+
+      \item An \code{<input type="hidden">} is now \code{:disabled} when
+      it carries \code{disabled} (or sits in a disabled
+      \code{<fieldset>}) and \code{:enabled} otherwise; previously it
+      was neither, a carve-out HTML does not make. The
+      \code{:required}/\code{:optional} carve-out is unchanged.
+
+      \item A \code{<fieldset>} inside a disabled \code{<fieldset>} is
+      now \code{:disabled}, following the rule already applied to form
+      controls (descendants outside the first \code{<legend>} child).
+
+      \item \code{:link} and \code{:any-link} no longer match a
+      \code{<link>} element with an \code{href}: HTML's hyperlink
+      elements for these pseudo-classes are \code{<a>} and \code{<area>}
+      only, so \code{"link:link"} now matches nothing.
+
+      \item The of-type pseudo-classes now reject a namespaced wildcard
+      subject (e.g. \code{"svg|*:first-of-type"}) with a translation
+      error, instead of silently counting siblings by namespace rather
+      than expanded name.
+
+      \item An unprefixed element name that cannot be written as an
+      XPath name test is now pinned to the null namespace (\code{"é"}
+      gives \code{*[name() = 'é' and namespace-uri() = '']}), giving it
+      the same meaning as a plain \code{"p"}; previously it also matched
+      in a default namespace.
+
+      \item An element or attribute name whose \emph{local part} cannot
+      be written as an XPath name test now keeps its prefix in the node
+      test and compares the local part alone (\code{"svg|di\\[v"} gives
+      \code{svg:*[local-name() = 'di[v']}), so the prefix resolves
+      through the supplied namespace map instead of matching whatever
+      prefix the document happens to use.
+
+      \item A namespace prefix that is not a valid XPath \code{NCName}
+      (e.g. \code{"\\31 ns|div"}) is now rejected with a translation
+      error, since the \code{name()} comparison previously emitted
+      tested the document's spelling rather than the bound URI. A
+      non-ASCII prefix (e.g. \code{"äöü|a"}) is now translated instead.
+
+      \item \code{NA} and empty-string values in the \code{ns} argument
+      of the \code{querySelectorNS()} family are now rejected rather
+      than used as a namespace URI.
+
+      \item A \emph{name} in the \code{ns} argument that is not a valid
+      XML \code{NCName} (e.g. \code{c("s p" = "urn:s")}) is now
+      rejected; previously it was interpolated into XPath that failed to
+      compile, giving a libxml2 warning and no matches. The condition
+      matches the one applied to prefixes written in selectors.
+
+      \item A zero-length \code{ns} argument (\code{character(0)} or
+      \code{list()}) to the \pkg{xml2} \code{querySelector()} family now
+      means "no namespaces" and skips the \code{xml_ns()} walk, rather
+      than behaving like \code{NULL}.
+
+      \item A \code{selector} or \code{prefix} holding bytes invalid in
+      their declared encoding is now rejected with a
+      \code{selectr_argument_error}, instead of surfacing base R's
+      "invalid multibyte string".
+
+      \item An invalid \code{translator} argument now raises a message
+      naming the \code{translator} argument and the value passed,
+      instead of \code{match.arg()}'s message naming an internal
+      argument. Unambiguous abbreviations are still accepted.
+
+      \item \code{p:nth-of-type(n of .a)} and the other of-type
+      pseudo-classes now report the same "'of' is only allowed in
+      :nth-child() and :nth-last-child()" error as
+      \code{:nth-child()}, instead of a confusing "Expected an
+      argument".
+
+      \item \code{:nth-child(0)} (and other \code{An+B} with
+      \code{a == 0} and \code{b < 1}) now gives the tidy \code{[0]}
+      early exit rather than
+      \code{[count(preceding-sibling::*) = -1]}.
+
+      \item A handful of parser and argument messages have been
+      reworded. Positions embedded in message text no longer duplicate
+      the caret gutter (they are still given, as "at position N", where
+      the gutter is suppressed). Four messages now name the actual
+      problem: an R-level \pkg{XML} tree is reported as one; a
+      functional pseudo-element such as \code{::part()} is reported as
+      unsupported; \code{div.5} gets the escaping hint \code{#5}
+      already had; and \code{[data-id=1]} is told to quote the value.
+
+      \item The \code{html} and \code{xhtml} \code{:lang()} now
+      implements Selectors 4 / RFC 4647 extended filtering, so
+      \code{:lang(de-DE)} matches \code{lang="de-Latn-DE"}. The
+      \code{generic} translator keeps Selectors 3 prefix matching, as
+      XPath 1.0's \code{lang()} cannot express skipped subtags.
+      \code{:lang("")} now matches an untagged element per spec, rather
+      than only a literal \code{lang=""}.
+
+      \item A \code{:lang()} range that is not an RFC 4647 extended
+      language range (e.g. \code{":lang(en-)"}, \code{":lang(--x)"},
+      \code{":lang(en*)"}) is now rejected, naming the offending range;
+      previously such ranges were normalised and over-matched.
+
+      \item An empty item in the comma-separated \code{:lang()}
+      argument list (\code{":lang(en, )"}) is now rejected rather than
+      silently dropped, as the \code{<ident>#} grammar requires.
+
+      \item A \code{:lang()} range of nothing but wildcards
+      (\code{":lang(\"*-*\")"}) now matches any element with a known
+      language, as \code{":lang(*)"} does, rather than producing an
+      empty predicate.
+
+      \item An escaped \code{*} before a \code{|} is now rejected as the
+      namespace prefix it is: only the delimiter \code{*} means "any
+      namespace", so \code{"\\2a|a"} and \code{"[\\2a|href]"} now raise
+      "The namespace prefix '*' is not an XPath name ...", where they
+      previously matched every namespace. \code{"*|a"} and
+      \code{"[*|href]"} are unchanged.
+
+      \item \code{"*|\\2a"} now selects an element named \code{*} in any
+      namespace, as \code{"ns|\\2a"} and \code{"\\2a"} already did; the
+      local name was tested against the character \code{*} rather than
+      for being the universal selector, so the selector matched every
+      element.
+
+    }
+  }
+}
+
 \section{Changes in version 0.6-0}{
 
   This release is a fairly major change. It comes about via a port to

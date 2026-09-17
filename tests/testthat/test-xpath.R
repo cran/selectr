@@ -1,29 +1,27 @@
-context("xpath")
-
 test_that("XPathExpr objects print correctly", {
     shw <- function(x) trimws(capture.output(x$show()))
 
     xp <- XPathExpr$new()
-    expect_that(xp$repr(), equals("XPathExpr[*]"))
-    expect_that(shw(xp), equals("XPathExpr[*]"))
+    expect_equal(xp$repr(), "XPathExpr[*]")
+    expect_equal(shw(xp), "XPathExpr[*]")
 
     xp <- XPathExpr$new("//")
-    expect_that(xp$repr(), equals("XPathExpr[//*]"))
-    expect_that(shw(xp), equals("XPathExpr[//*]"))
+    expect_equal(xp$repr(), "XPathExpr[//*]")
+    expect_equal(shw(xp), "XPathExpr[//*]")
 
     xp <- XPathExpr$new(element = "a")
-    expect_that(xp$repr(), equals("XPathExpr[a]"))
-    expect_that(shw(xp), equals("XPathExpr[a]"))
+    expect_equal(xp$repr(), "XPathExpr[a]")
+    expect_equal(shw(xp), "XPathExpr[a]")
 
     xp <- XPathExpr$new("//a/", "b")
-    expect_that(xp$repr(), equals("XPathExpr[//a/b]"))
-    expect_that(shw(xp), equals("XPathExpr[//a/b]"))
+    expect_equal(xp$repr(), "XPathExpr[//a/b]")
+    expect_equal(shw(xp), "XPathExpr[//a/b]")
 })
 
 test_that("Generic translator validates language arguments", {
     translator <- GenericTranslator$new()
-    expect_that(translator$css_to_xpath("xml:lang(en)"), equals("descendant-or-self::xml[lang('en')]"))
-    expect_that(translator$css_to_xpath("xml:lang(en-nz)"), equals("descendant-or-self::xml[lang('en-nz')]"))
+    expect_equal(translator$css_to_xpath("xml:lang(en)"), "descendant-or-self::xml[lang('en')]")
+    expect_equal(translator$css_to_xpath("xml:lang(en-nz)"), "descendant-or-self::xml[lang('en-nz')]")
 
     expect_error(translator$css_to_xpath("xml:lang()"), "Expected at least one argument.*")
     expect_error(translator$css_to_xpath("xml:lang(1)"), "Expected string, ident, or \\* arguments.*")
@@ -32,87 +30,209 @@ test_that("Generic translator validates language arguments", {
                  "Expected string, ident, or \\* arguments for :lang\\(\\), got <NUMBER '5' at 14>")
 
     # Multiple languages with OR logic
-    expect_that(translator$css_to_xpath("xml:lang(en, fr)"), equals("descendant-or-self::xml[lang('en') or lang('fr')]"))
-    expect_that(translator$css_to_xpath("xml:lang(en, de, fr)"), equals("descendant-or-self::xml[lang('en') or lang('de') or lang('fr')]"))
+    expect_equal(translator$css_to_xpath("xml:lang(en, fr)"), "descendant-or-self::xml[lang('en') or lang('fr')]")
+    expect_equal(translator$css_to_xpath("xml:lang(en, de, fr)"), "descendant-or-self::xml[lang('en') or lang('de') or lang('fr')]")
 })
 
 test_that("HTML translator validates language arguments", {
     translator <- HTMLTranslator$new()
-    expect_that(translator$css_to_xpath("html:lang(en)"), equals("descendant-or-self::html[ancestor-or-self::*[@lang][1][starts-with(concat(translate(@lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'en-')]]"))
-    expect_that(translator$css_to_xpath("html:lang(en-nz)"), equals("descendant-or-self::html[ancestor-or-self::*[@lang][1][starts-with(concat(translate(@lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'en-nz-')]]"))
+    expect_equal(translator$css_to_xpath("html:lang(en)"), "descendant-or-self::html[ancestor-or-self::*[@lang][1][starts-with(concat(translate(@lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'en-')]]")
+    # "en-nz" names two subtags, so RFC 4647 extended filtering applies
+    # (see the "extended-filtering exact ranges" test below) rather than
+    # the single-subtag prefix test used for "en" above
+    expect_equal(translator$css_to_xpath("html:lang(en-nz)"),
+                 paste0("descendant-or-self::html[ancestor-or-self::*[@lang][1][",
+                        "starts-with(concat(translate(@lang, ",
+                        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'en-') and ",
+                        "contains(concat('-', substring-after(concat(translate(@lang, ",
+                        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'en-')), '-nz-')]]"))
 
     expect_error(translator$css_to_xpath("html:lang()"), "Expected at least one argument.*")
     expect_error(translator$css_to_xpath("html:lang(1)"), "Expected string, ident, or \\* arguments.*")
 
     # Multiple languages with OR logic
-    expect_that(translator$css_to_xpath("html:lang(en, fr)"),
-                equals("descendant-or-self::html[ancestor-or-self::*[@lang][1][starts-with(concat(translate(@lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'en-')] or ancestor-or-self::*[@lang][1][starts-with(concat(translate(@lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'fr-')]]"))
+    expect_equal(translator$css_to_xpath("html:lang(en, fr)"),
+                 "descendant-or-self::html[ancestor-or-self::*[@lang][1][starts-with(concat(translate(@lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'en-')] or ancestor-or-self::*[@lang][1][starts-with(concat(translate(@lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'fr-')]]")
 })
 
 test_that("HTML translator lowercases attribute names but not values", {
     translator <- HTMLTranslator$new()
 
     # Attribute names in HTML are case-insensitive, but values are not
-    expect_that(translator$css_to_xpath('[Data-State="Active"]'),
-                equals("descendant-or-self::*[@data-state = 'Active']"))
-    expect_that(translator$css_to_xpath('[data-state~="Active"]'),
-                equals(paste0("descendant-or-self::*[@data-state and ",
-                              "contains(concat(' ', ",
-                              "normalize-space(@data-state), ' '), ",
-                              "' Active ')]")))
+    expect_equal(translator$css_to_xpath('[Data-State="Active"]'),
+                 "descendant-or-self::*[@data-state = 'Active']")
+    expect_equal(translator$css_to_xpath('[data-state~="Active"]'),
+                 paste0("descendant-or-self::*[",
+                        "contains(concat(' ', ",
+                        "normalize-space(@data-state), ' '), ",
+                        "' Active ')]"))
     # Element names are still lowercased
-    expect_that(translator$css_to_xpath('DIV[data-state="Active"]'),
-                equals("descendant-or-self::div[@data-state = 'Active']"))
+    expect_equal(translator$css_to_xpath('DIV[data-state="Active"]'),
+                 "descendant-or-self::div[@data-state = 'Active']")
+})
+
+test_that("the HTML case-insensitive attributes fold their values", {
+    translator <- HTMLTranslator$new()
+    lc <- function(expr)
+        paste0("translate(", expr, ", 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', ",
+               "'abcdefghijklmnopqrstuvwxyz')")
+
+    # HTML matches the values of the attributes in its
+    # "Case-sensitivity of selectors" list ASCII case-insensitively,
+    # so both sides of the comparison are folded
+    expect_equal(translator$css_to_xpath("input[type=RADIO]"),
+                 paste0("descendant-or-self::input[", lc("@type"),
+                        " = 'radio']"))
+    expect_equal(translator$css_to_xpath("a[REL=Tag]"),
+                 paste0("descendant-or-self::a[", lc("@rel"), " = 'tag']"))
+    # Every operator folds, and an operator that names the attribute
+    # twice folds it twice
+    expect_equal(translator$css_to_xpath('[lang|="en"]'),
+                 paste0("descendant-or-self::*[", lc("@lang"),
+                        " = 'en' or starts-with(", lc("@lang"), ", 'en-')]"))
+    expect_equal(translator$css_to_xpath('[media*="Print"]'),
+                 paste0("descendant-or-self::*[contains(", lc("@media"),
+                        ", 'print')]"))
+
+    # An explicit 's' opts back out; an empty value is left exact, as
+    # it is for the 'i' flag
+    expect_equal(translator$css_to_xpath("input[type=RADIO s]"),
+                 "descendant-or-self::input[@type = 'RADIO']")
+    expect_equal(translator$css_to_xpath('input[type=""]'),
+                 "descendant-or-self::input[@type = '']")
+
+    # The list is closed, and does not cover a namespaced attribute
+    # even when its local name is on it
+    expect_equal(translator$css_to_xpath('a[href^="HTTP"]'),
+                 "descendant-or-self::a[starts-with(@href, 'HTTP')]")
+    expect_equal(translator$css_to_xpath('[class="Foo"]'),
+                 "descendant-or-self::*[@class = 'Foo']")
+    expect_equal(translator$css_to_xpath('[data-type="Foo"]'),
+                 "descendant-or-self::*[@data-type = 'Foo']")
+    expect_equal(translator$css_to_xpath('[svg|type="Foo"]'),
+                 "descendant-or-self::*[@svg:type = 'Foo']")
+    expect_equal(translator$css_to_xpath('[*|type="Foo"]'),
+                 paste0("descendant-or-self::*[@*[local-name() = 'type']",
+                        " = 'Foo']"))
+
+    # The rule is HTML's: neither the xhtml nor the generic translator
+    # serves an HTML document
+    expect_equal(HTMLTranslator$new(xhtml = TRUE)$css_to_xpath("input[type=RADIO]"),
+                 "descendant-or-self::input[@type = 'RADIO']")
+    expect_equal(GenericTranslator$new()$css_to_xpath("input[type=RADIO]"),
+                 "descendant-or-self::input[@type = 'RADIO']")
+})
+
+test_that("the HTML translator folds names as an HTML parser does", {
+    translator <- HTMLTranslator$new()
+
+    # An HTML parser lowercases ASCII only, so a non-ASCII element or
+    # attribute name reaches XPath as it was written
+    expect_equal(translator$css_to_xpath("\\C4[\\C4=x]"),
+                 paste0("descendant-or-self::*[name() = '\u00c4' and ",
+                        "namespace-uri() = '' and ",
+                        "attribute::*[name() = '\u00c4'] = 'x']"))
+    # U+041B CYRILLIC CAPITAL LETTER EL
+    expect_equal(translator$css_to_xpath("\\41b"),
+                 paste0("descendant-or-self::*[name() = '\u041b' and ",
+                        "namespace-uri() = '']"))
+})
+
+test_that("ASCII folds cope with a name containing a noncharacter", {
+    # R refuses to convert a noncharacter (U+FFFE, U+FFFF) to wide
+    # characters, so tolower() and chartr() fail outright on any string
+    # holding one - which is why every ASCII fold in the package goes
+    # through ascii_lower() instead. Each selector below reaches one of
+    # those folds, and each used to leave the package with an unclassed
+    # "invalid input ... in 'utf8towcs'" rather than a translation or a
+    # selectr condition
+    translator <- HTMLTranslator$new()
+    escapes <- c("\\FFFE", "\\FFFF")
+    chars <- intToUtf8(c(0xFFFEL, 0xFFFFL), multiple = TRUE)
+
+    for (i in seq_along(escapes)) {
+        esc <- escapes[i]
+        ch <- chars[i]
+        # An element name, lowercased for an HTML document
+        expect_equal(translator$css_to_xpath(esc, prefix = ""),
+                     paste0("*[name() = '", ch, "' and namespace-uri() = '']"))
+        # An attribute name, lowercased the same way
+        expect_equal(translator$css_to_xpath(paste0("[", esc, "=x]"),
+                                             prefix = ""),
+                     paste0("*[attribute::*[name() = '", ch, "'] = 'x']"))
+        # A :lang() range: no fold to reach - a noncharacter cannot
+        # appear in an RFC 4647 language range - but the range still
+        # has to be named in a selectr condition, not crash the
+        # message-building
+        expect_error(translator$css_to_xpath(paste0(":lang(", esc, ")")),
+                     class = "selectr_translation_error")
+        # A pseudo-class name, an attribute flag and an An+B argument
+        # are all matched ASCII case-insensitively too; none of the
+        # three is valid, and each must say so as a selectr condition
+        expect_error(translator$css_to_xpath(paste0(":", esc)),
+                     class = "selectr_translation_error")
+        expect_error(translator$css_to_xpath(paste0("[a=b ", esc, "]")),
+                     class = "selectr_parse_error")
+        expect_error(translator$css_to_xpath(paste0(":nth-child(", esc, ")")),
+                     class = "selectr_parse_error")
+    }
 })
 
 test_that("Generic translator handles :lang() wildcards and comma lists", {
     translator <- GenericTranslator$new()
 
     # Simple languages still work
-    expect_that(translator$css_to_xpath("div:lang(en)"), equals("descendant-or-self::div[lang('en')]"))
+    expect_equal(translator$css_to_xpath("div:lang(en)"), "descendant-or-self::div[lang('en')]")
 
-    # Wildcard * matches everything
-    expect_that(translator$css_to_xpath('div:lang(*)'), equals("descendant-or-self::div[true()]"))
+    # Wildcard * matches any element with a known (non-empty) language
+    expect_equal(translator$css_to_xpath('div:lang(*)'),
+                 paste0("descendant-or-self::div[ancestor-or-self::*",
+                        "[@xml:lang][1][string-length(@xml:lang) > 0]]"))
 
     # Wildcard suffix like en-* for prefix matching; the trailing "-*" is
     # stripped because XPath's lang() already matches at '-' boundaries
     # (lang('en-') would match nothing)
-    expect_that(translator$css_to_xpath('div:lang(en-*)'), equals("descendant-or-self::div[lang('en')]"))
-    expect_that(translator$css_to_xpath('div:lang(fr-*)'), equals("descendant-or-self::div[lang('fr')]"))
+    expect_equal(translator$css_to_xpath('div:lang(en-*)'), "descendant-or-self::div[lang('en')]")
+    expect_equal(translator$css_to_xpath('div:lang(fr-*)'), "descendant-or-self::div[lang('fr')]")
 
     # Comma-separated lists with OR logic
-    expect_that(translator$css_to_xpath('div:lang(en, fr)'), equals("descendant-or-self::div[lang('en') or lang('fr')]"))
-    expect_that(translator$css_to_xpath('div:lang(en, de, fr)'), equals("descendant-or-self::div[lang('en') or lang('de') or lang('fr')]"))
+    expect_equal(translator$css_to_xpath('div:lang(en, fr)'), "descendant-or-self::div[lang('en') or lang('fr')]")
+    expect_equal(translator$css_to_xpath('div:lang(en, de, fr)'), "descendant-or-self::div[lang('en') or lang('de') or lang('fr')]")
 
     # Mixed wildcards and regular languages
-    expect_that(translator$css_to_xpath('div:lang(en-*, fr)'), equals("descendant-or-self::div[lang('en') or lang('fr')]"))
-    expect_that(translator$css_to_xpath('div:lang(*, de)'), equals("descendant-or-self::div[true() or lang('de')]"))
+    expect_equal(translator$css_to_xpath('div:lang(en-*, fr)'), "descendant-or-self::div[lang('en') or lang('fr')]")
+    expect_equal(translator$css_to_xpath('div:lang(*, de)'),
+                 paste0("descendant-or-self::div[ancestor-or-self::*",
+                        "[@xml:lang][1][string-length(@xml:lang) > 0]",
+                        " or lang('de')]"))
 })
 
 test_that("HTML translator handles :lang() wildcards and comma lists", {
     translator <- HTMLTranslator$new()
 
-    # Wildcard * matches any element with lang attribute
-    expect_that(translator$css_to_xpath('div:lang(*)'), equals("descendant-or-self::div[ancestor-or-self::*[@lang]]"))
+    # Wildcard * matches any element with a known (non-empty) language
+    expect_equal(translator$css_to_xpath('div:lang(*)'),
+                 paste0("descendant-or-self::div[ancestor-or-self::*",
+                        "[@lang][1][string-length(@lang) > 0]]"))
 
     # Wildcard suffix for prefix matching
-    expect_that(translator$css_to_xpath('div:lang(en-*)'),
-                equals("descendant-or-self::div[ancestor-or-self::*[@lang][1][starts-with(concat(translate(@lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'en-')]]"))
+    expect_equal(translator$css_to_xpath('div:lang(en-*)'),
+                 "descendant-or-self::div[ancestor-or-self::*[@lang][1][starts-with(concat(translate(@lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'en-')]]")
 
     # Multiple values with OR logic
-    expect_that(translator$css_to_xpath('div:lang(en, fr)'),
-                equals("descendant-or-self::div[ancestor-or-self::*[@lang][1][starts-with(concat(translate(@lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'en-')] or ancestor-or-self::*[@lang][1][starts-with(concat(translate(@lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'fr-')]]"))
+    expect_equal(translator$css_to_xpath('div:lang(en, fr)'),
+                 "descendant-or-self::div[ancestor-or-self::*[@lang][1][starts-with(concat(translate(@lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'en-')] or ancestor-or-self::*[@lang][1][starts-with(concat(translate(@lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'fr-')]]")
 })
 
 test_that("Generic translator handles :dir() function", {
     translator <- GenericTranslator$new()
 
     # :dir() uses "never matches" pattern (requires runtime directionality detection)
-    expect_that(translator$css_to_xpath("div:dir(ltr)"), equals("descendant-or-self::div[0]"))
-    expect_that(translator$css_to_xpath("div:dir(rtl)"), equals("descendant-or-self::div[0]"))
-    expect_that(translator$css_to_xpath(":dir(ltr)"), equals("descendant-or-self::*[0]"))
+    expect_equal(translator$css_to_xpath("div:dir(ltr)"), "descendant-or-self::div[0]")
+    expect_equal(translator$css_to_xpath("div:dir(rtl)"), "descendant-or-self::div[0]")
+    expect_equal(translator$css_to_xpath(":dir(ltr)"), "descendant-or-self::*[0]")
     # values other than ltr/rtl are not invalid, they just never match
-    expect_that(translator$css_to_xpath(":dir(foo)"), equals("descendant-or-self::*[0]"))
+    expect_equal(translator$css_to_xpath(":dir(foo)"), "descendant-or-self::*[0]")
 
     expect_error(translator$css_to_xpath("div:dir()"), "Expected at least one argument.*")
     # :dir() takes exactly one identifier (CSS Selectors Level 4)
@@ -130,15 +250,15 @@ test_that("HTML translator handles :dir() function", {
     # deliberate decision, not a missing override: resolved
     # directionality (dir=auto, bdi, form controls) is not static,
     # so no :lang()-style attribute-walk approximation is attempted
-    expect_that(translator$css_to_xpath("div:dir(ltr)"), equals("descendant-or-self::div[0]"))
-    expect_that(translator$css_to_xpath("div:dir(rtl)"), equals("descendant-or-self::div[0]"))
-    expect_that(translator$css_to_xpath(":dir(ltr)"), equals("descendant-or-self::*[0]"))
+    expect_equal(translator$css_to_xpath("div:dir(ltr)"), "descendant-or-self::div[0]")
+    expect_equal(translator$css_to_xpath("div:dir(rtl)"), "descendant-or-self::div[0]")
+    expect_equal(translator$css_to_xpath(":dir(ltr)"), "descendant-or-self::*[0]")
 
     xhtml_translator <- HTMLTranslator$new(xhtml = TRUE)
-    expect_that(xhtml_translator$css_to_xpath("div:dir(ltr)"),
-                equals("descendant-or-self::div[0]"))
-    expect_that(xhtml_translator$css_to_xpath("div:dir(rtl)"),
-                equals("descendant-or-self::div[0]"))
+    expect_equal(xhtml_translator$css_to_xpath("div:dir(ltr)"),
+                 "descendant-or-self::div[0]")
+    expect_equal(xhtml_translator$css_to_xpath("div:dir(rtl)"),
+                 "descendant-or-self::div[0]")
 
     expect_error(translator$css_to_xpath("div:dir()"), "Expected at least one argument.*")
     # :dir() takes exactly one identifier (CSS Selectors Level 4)
@@ -160,10 +280,77 @@ test_that(":lang() and :dir() reject a lone '-' argument", {
                      "Expected a single ident argument.*")
         expect_error(translator$css_to_xpath("e:lang(en, -)"),
                      "Expected string, ident, or \\* arguments.*")
-        # valid idents starting or ending with '-' keep working
-        expect_error(translator$css_to_xpath("e:lang(--x)"), NA)
-        expect_error(translator$css_to_xpath("e:lang(en--)"), NA)
+        # '--x' and 'en--' are valid idents, so they get past the
+        # argument check - and are then rejected as language ranges
+        # (see the extended-language-range tests below)
+        expect_error(translator$css_to_xpath("e:lang(--x)"),
+                     "not a well-formed extended language range")
+        expect_error(translator$css_to_xpath("e:lang(en--)"),
+                     "not a well-formed extended language range")
         expect_error(translator$css_to_xpath("e:lang(en-*)"), NA)
+    }
+})
+
+test_that(":lang() rejects an ill-formed extended language range", {
+    # Selectors 4 section 7.2 requires each range to be an RFC 4647
+    #   extended-language-range = (1*8ALPHA / "*") *("-" (1*8alphanum / "*"))
+    # so an empty, over-long or non-alphanumeric subtag, and a '*' that
+    # is not a whole subtag, are all ill-formed. The spec says such a
+    # range matches nothing while leaving the selector valid; XPath has
+    # no never-matching form that survives being combined with the rest
+    # of the expression, so the range is rejected by name instead of
+    # being normalised into a well-formed one - ":lang(en-)" used to
+    # translate as ":lang(en)" and select every English element.
+    ill_formed <- c("en-", '"en-"', "en--", "-en", "--x", "--", "en*",
+                    "de-*--de", '"*-CH-"', "abcdefghi", "x1", '"en-abcdefghi"')
+    for (translator in list(GenericTranslator$new(), HTMLTranslator$new(),
+                            HTMLTranslator$new(xhtml = TRUE))) {
+        for (range in ill_formed) {
+            expect_error(translator$css_to_xpath(paste0("e:lang(", range, ")")),
+                         "not a well-formed extended language range",
+                         class = "selectr_translation_error")
+            # and equally when it keeps company with a valid range
+            expect_error(
+                translator$css_to_xpath(paste0("e:lang(en, ", range, ")")),
+                "not a well-formed extended language range")
+        }
+        # well-formed ranges of every shape stay accepted, including
+        # the empty range, which Selectors 4 gives a meaning of its own
+        for (range in c('""', "en", "EN", "en-gb", "en-GB-1996", "*",
+                        "en-*", '"en-*"', "abcdefgh")) {
+            expect_error(translator$css_to_xpath(paste0("e:lang(", range, ")")),
+                         NA)
+        }
+    }
+})
+
+test_that(":lang() rejects an empty item of its comma-separated list", {
+    # The argument is an <ident>#-style list, in which an empty item is
+    # a grammar error - not a range that matches nothing, and not
+    # something to drop silently (":lang(en, )" used to translate as
+    # ":lang(en)")
+    msg <- "Expected a language range for :lang\\(\\), got "
+    for (translator in list(GenericTranslator$new(), HTMLTranslator$new(),
+                            HTMLTranslator$new(xhtml = TRUE))) {
+        # the token reported is the one found where the range should
+        # be: the ',' that follows the missing item, or the ')' (or
+        # EOF) that closes the list after a trailing comma
+        expect_error(translator$css_to_xpath("e:lang(en, )"),
+                     paste0(msg, "<DELIM '\\)' at 12>"),
+                     class = "selectr_translation_error")
+        expect_error(translator$css_to_xpath("e:lang(, en)"),
+                     paste0(msg, "<DELIM ',' at 8>"))
+        expect_error(translator$css_to_xpath("e:lang(en,, fr)"),
+                     paste0(msg, "<DELIM ',' at 11>"))
+        expect_error(translator$css_to_xpath("e:lang(en,"),
+                     paste0(msg, "<EOF at 11>"))
+        # a list of nothing but empty items is no more an argument list
+        # than ":lang()" is, and keeps that parse error
+        expect_error(translator$css_to_xpath("e:lang(,)"),
+                     "Expected at least one argument",
+                     class = "selectr_parse_error")
+        # an *empty range*, by contrast, is a range like any other
+        expect_error(translator$css_to_xpath('e:lang(en, "")'), NA)
     }
 })
 
@@ -175,52 +362,125 @@ test_that("HTML translator handles :lang() extended-filtering wildcards", {
     translator <- HTMLTranslator$new()
     lc <- "translate(@lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
 
-    # A leading wildcard "*-CH" matches any tag carrying a "ch" subtag.
-    # Both the unquoted (tokenized as '*' + "-CH") and quoted spellings
+    # A leading wildcard "*-CH" matches any tag carrying a "ch" subtag
+    # after the first: RFC 4647 step 2 pairs the '*' with the tag's
+    # primary subtag, so that subtag is consumed rather than searched
+    # (substring-after drops it before the containment test). Both the
+    # unquoted (tokenized as '*' + "-CH") and quoted spellings
     # reassemble to the same range and translation.
     expected_star_ch <- sprintf(
-        "descendant-or-self::*[ancestor-or-self::*[@lang][1][contains(concat('-', %s, '-'), '-ch-')]]",
+        paste0("descendant-or-self::*[ancestor-or-self::*[@lang][1]",
+               "[contains(concat('-', substring-after(concat(%s, '-'), '-')), ",
+               "'-ch-')]]"),
         lc)
-    expect_that(translator$css_to_xpath(":lang(*-CH)"), equals(expected_star_ch))
-    expect_that(translator$css_to_xpath('div:lang("*-CH")'),
-                equals(sub("self::\\*", "self::div", expected_star_ch)))
+    expect_equal(translator$css_to_xpath(":lang(*-CH)"), expected_star_ch)
+    expect_equal(translator$css_to_xpath('div:lang("*-CH")'),
+                 sub("self::\\*", "self::div", expected_star_ch))
 
     # An interior wildcard "de-*-DE": the tag must start with "de" and
     # carry a later "de" subtag, in that order (substring-after threads
     # the tail so "de-CH" alone does not match).
-    expect_that(translator$css_to_xpath(":lang(de-*-DE)"),
-                equals(sprintf(paste0("descendant-or-self::*[ancestor-or-self::*[@lang][1]",
-                                      "[starts-with(concat('-', %1$s, '-'), '-de-') and ",
-                                      "contains(substring-after(concat('-', %1$s, '-'), '-de'), '-de-')]]"),
-                               lc)))
+    expect_equal(translator$css_to_xpath(":lang(de-*-DE)"),
+                 sprintf(paste0("descendant-or-self::*[ancestor-or-self::*[@lang][1]",
+                                "[starts-with(concat(%1$s, '-'), 'de-') and ",
+                                "contains(concat('-', substring-after(concat(%1$s, '-'), ",
+                                "'de-')), '-de-')]]"),
+                         lc))
 
     # A non-trailing wildcard in a comma list translates alongside its
     # neighbours without error
     expect_error(translator$css_to_xpath(":lang(en, *-CH)"), NA)
+
+    # An empty subtag makes the range ill-formed, wherever it falls: it
+    # is rejected rather than skipped, which would translate
+    # ":lang(de-*--de)" as the different range ":lang(de-*-de)"
+    expect_error(translator$css_to_xpath(":lang(de-*--de)"),
+                 "not a well-formed extended language range")
+
+    # An all-wildcard range constrains no subtag, so it matches any
+    # element with a known language, exactly as ":lang(*)" does
+    expect_equal(translator$css_to_xpath(':lang("*-*")'),
+                 translator$css_to_xpath(":lang(*)"))
 })
 
 test_that("HTML :lang() extended wildcards match the right elements", {
-    library(xml2)
-    doc <- read_xml(paste0(
+    skip_if_not_installed("xml2")
+    doc <- xml2::read_xml(paste0(
         "<html>",
         "<a lang='fr-CH'/>",       # ch subtag    -> :lang(*-CH)
         "<b lang='de-CH-1996'/>",  # ch subtag    -> :lang(*-CH)
         "<c lang='en-GB'/>",       # no ch        -> neither
-        "<d lang='ch'/>",          # ch is the whole tag -> :lang(*-CH)
+        "<d lang='ch'/>",          # ch is the whole tag -> neither
         "<e lang='de-DE'/>",       # de...de, no ch -> :lang(de-*-DE) only
         "<f lang='de-CH-DE'/>",    # ch subtag and de...de -> both
         "<g lang='de-CH'/>",       # ch subtag, but no later de -> :lang(*-CH) only
+        "<h lang='ch-DE'/>",       # ch is the primary subtag -> neither
         "</html>"))
     ids <- function(css) {
-        nodes <- xml_find_all(doc, css_to_xpath(css, translator = "html"))
-        paste(xml_name(nodes), collapse = ",")
+        nodes <- xml2::xml_find_all(doc, css_to_xpath(css, translator = "html"))
+        paste(xml2::xml_name(nodes), collapse = ",")
     }
-    # every element carrying a "ch" subtag, in any position
-    expect_equal(ids(":lang(*-CH)"), "a,b,d,f,g")
+    # every element carrying a "ch" subtag after the primary one: the
+    # leading wildcard is paired with the primary subtag (RFC 4647 step
+    # 2), so lang="ch" and lang="ch-DE" are not matched by "*-CH"
+    expect_equal(ids(":lang(*-CH)"), "a,b,f,g")
     # "de" first and a later "de" subtag, in order (de-CH alone excluded)
     expect_equal(ids(":lang(de-*-DE)"), "e,f")
     # case-insensitive: the wildcard subtag is matched in lower case
-    expect_equal(ids(":lang(*-ch)"), "a,b,d,f,g")
+    expect_equal(ids(":lang(*-ch)"), "a,b,f,g")
+})
+
+test_that("HTML :lang() applies extended filtering to exact multi-subtag ranges", {
+    skip_if_not_installed("xml2")
+    # A range with no literal '*' but more than one subtag is still RFC
+    # 4647 extended filtering, not a plain prefix test: any subtag may
+    # be skipped between the ones named.
+    doc <- xml2::read_xml('<a lang="de-Latn-DE">x</a>')
+    xp <- css_to_xpath("*:lang(de-DE)", translator = "html")
+    expect_equal(xml2::xml_name(xml2::xml_find_all(doc, xp)), "a")
+
+    # A single subtag (with or without a trailing wildcard) is
+    # unaffected: still a plain prefix test, so both translate to the
+    # same "de-" prefix condition
+    expect_equal(
+        HTMLTranslator$new()$css_to_xpath("*:lang(de)"),
+        HTMLTranslator$new()$css_to_xpath("*:lang(de-*)"))
+})
+
+test_that("generic translator's :lang() stays Selectors 3 prefix matching", {
+    skip_if_not_installed("xml2")
+    # Unlike the html/xhtml translators, the generic translator has no
+    # lang-attribute to walk by hand, so a multi-subtag exact range
+    # still does a plain |=-style prefix match: it does not skip
+    # subtags the way RFC 4647 extended filtering requires.
+    doc <- xml2::read_xml('<a xml:lang="de-Latn-DE">x</a>')
+    xp <- css_to_xpath("*:lang(de-DE)")
+    expect_length(xml2::xml_find_all(doc, xp), 0)
+})
+
+test_that(':lang("") matches elements with no tagged language', {
+    skip_if_not_installed("xml2")
+    # The document element itself carries no lang/xml:lang either, so
+    # it counts as "not tagged" too, along with <a> (explicitly reset)
+    # and <b> (never had one); <c> and its child <c1> both inherit a
+    # real language and must not match.
+    doc <- xml2::read_xml(paste0(
+        '<r>',
+        '<a lang="">untagged-by-reset</a>',
+        '<b>never-tagged</b>',
+        '<c lang="en"><c1/></c>',            # inherits a real language
+        '</r>'))
+    xp <- css_to_xpath('*:lang("")', translator = "html")
+    expect_equal(xml2::xml_name(xml2::xml_find_all(doc, xp)), c("r", "a", "b"))
+
+    generic <- xml2::read_xml(paste0(
+        '<r>',
+        '<a xml:lang="">untagged-by-reset</a>',
+        '<b>never-tagged</b>',
+        '<c xml:lang="en"><c1/></c>',
+        '</r>'))
+    xp2 <- css_to_xpath('*:lang("")')
+    expect_equal(xml2::xml_name(xml2::xml_find_all(generic, xp2)), c("r", "a", "b"))
 })
 
 test_that("generic translator rejects :lang() non-trailing wildcards", {
@@ -243,11 +503,41 @@ test_that("generic translator rejects :lang() non-trailing wildcards", {
     expect_error(translator$css_to_xpath(":lang(*, de)"), NA)
 })
 
+test_that(":lang(*) only matches elements with a known language", {
+    skip_if_not_installed("xml2")
+    # The bare wildcard means "the language is known", not "always
+    # true": an element with no language in its ancestry, or one whose
+    # nearest declaration resets the language to unknown with an empty
+    # value, must not match.
+    generic <- xml2::read_xml(paste0(
+        "<r>",
+        "<a/>",                                    # no language at all
+        "<b xml:lang='en'><b1/></b>",              # declared, inherited
+        "<c xml:lang=''/>",                        # reset to unknown
+        "<d xml:lang='en'><d1 xml:lang=''/></d>",  # d1's nearest resets
+        "</r>"))
+    expect_equal(
+        xml2::xml_name(xml2::xml_find_all(generic, css_to_xpath(":lang(*)"))),
+        c("b", "b1", "d"))
+
+    html <- xml2::read_xml(paste0(
+        "<html>",
+        "<a/>",
+        "<b lang='en'><b1/></b>",
+        "<c lang=''/>",
+        "<d lang='en'><d1 lang=''/></d>",          # d1's nearest resets
+        "</html>"))
+    expect_equal(
+        xml2::xml_name(xml2::xml_find_all(
+            html, css_to_xpath(":lang(*)", translator = "html"))),
+        c("b", "b1", "d"))
+})
+
 test_that("HTMLTranslator rejects unknown construction arguments", {
     expect_error(HTMLTranslator$new(strict = TRUE), "unused argument")
     # (xhtm = TRUE would still construct via R's standard partial
     # argument matching of xhtml)
-    expect_that(HTMLTranslator$new(xhtm = TRUE)$xhtml, equals(TRUE))
+    expect_equal(HTMLTranslator$new(xhtm = TRUE)$xhtml, TRUE)
 })
 
 test_that("a translator subclass can add new pseudo-class handlers", {
@@ -266,10 +556,10 @@ test_that("a translator subclass can add new pseudo-class handlers", {
             }))
 
     translator <- BlinkTranslator$new()
-    expect_that(translator$css_to_xpath("a:blink"),
-                equals("descendant-or-self::a[@blink]"))
-    expect_that(translator$css_to_xpath("a:nth-word(2)"),
-                equals("descendant-or-self::a[@nth-word]"))
+    expect_equal(translator$css_to_xpath("a:blink"),
+                 "descendant-or-self::a[@blink]")
+    expect_equal(translator$css_to_xpath("a:nth-word(2)"),
+                 "descendant-or-self::a[@nth-word]")
     # Unknown names still produce the usual errors
     expect_error(translator$css_to_xpath("a:frobnicate"),
                  "The pseudo-class :frobnicate is unknown")
@@ -282,11 +572,11 @@ test_that("a translator subclass can override id_attribute", {
         inherit = GenericTranslator,
         public = list(id_attribute = "xml:id"))
 
-    expect_that(XMLIdTranslator$new()$css_to_xpath("#foo"),
-                equals("descendant-or-self::*[@xml:id = 'foo']"))
+    expect_equal(XMLIdTranslator$new()$css_to_xpath("#foo"),
+                 "descendant-or-self::*[@xml:id = 'foo']")
     # The default is unchanged
-    expect_that(GenericTranslator$new()$css_to_xpath("#foo"),
-                equals("descendant-or-self::*[@id = 'foo']"))
+    expect_equal(GenericTranslator$new()$css_to_xpath("#foo"),
+                 "descendant-or-self::*[@id = 'foo']")
 })
 
 test_that("unimplemented methods throw errors", {
@@ -297,4 +587,28 @@ test_that("unimplemented methods throw errors", {
     expect_error(translator$css_to_xpath("*:first-of-type"), ".* is not implemented")
     expect_error(translator$css_to_xpath("*:last-of-type"), ".* is not implemented")
     expect_error(translator$css_to_xpath("*:only-of-type"), ".* is not implemented")
+
+    # A namespaced wildcard is the universal selector too: counting
+    # 'svg|*' siblings would group them by namespace rather than by
+    # expanded name, so it errors instead of mistranslating
+    expect_error(translator$css_to_xpath("svg|*:nth-of-type(2)"),
+                 ".* is not implemented")
+    expect_error(translator$css_to_xpath("svg|*:nth-last-of-type(2)"),
+                 ".* is not implemented")
+    expect_error(translator$css_to_xpath("svg|*:first-of-type"),
+                 ".* is not implemented")
+    expect_error(translator$css_to_xpath("svg|*:last-of-type"),
+                 ".* is not implemented")
+    expect_error(translator$css_to_xpath("svg|*:only-of-type"),
+                 ".* is not implemented")
+    # ... including where a combinator has folded the name test into a
+    # predicate
+    expect_error(translator$css_to_xpath("a + svg|*:first-of-type"),
+                 ".* is not implemented")
+
+    # A namespaced *name* is still counted by its own node test
+    expect_equal(translator$css_to_xpath("svg|g:first-of-type"),
+                 paste("descendant-or-self::svg:g",
+                       "[count(preceding-sibling::svg:g) = 0]",
+                       sep = ""))
 })

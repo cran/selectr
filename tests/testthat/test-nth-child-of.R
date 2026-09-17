@@ -1,5 +1,3 @@
-context("nth-child with 'of S' selector list (CSS Level 4)")
-
 test_that(":nth-child(n of S) parses correctly", {
     parsed <- selectr:::parse("div:nth-child(2 of .foo)")
     expect_equal(length(parsed), 1)
@@ -29,6 +27,14 @@ test_that(":nth-child(n of S) with multiple selectors parses correctly", {
     fn_obj <- parsed[[1]]$parsed_tree
     expect_equal(fn_obj$name, "nth-child")
     expect_equal(length(fn_obj$selector_list), 2)
+})
+
+test_that("Function$repr() includes the 'of S' selector list", {
+    expect_equal(selectr:::parse(":nth-child(2 of .a)")[[1]]$repr(),
+                 "Function[Element[*]:nth-child(['2'] of Class[Element[*].a])]")
+    expect_equal(selectr:::parse(":nth-child(2 of .a, .b)")[[1]]$repr(),
+                 paste0("Function[Element[*]:nth-child(['2'] of ",
+                       "Class[Element[*].a], Class[Element[*].b])]"))
 })
 
 test_that(":nth-child(n of S) generates correct XPath", {
@@ -113,7 +119,7 @@ test_that(":nth-child with complex selector works", {
     xpath <- css_to_xpath("div:nth-child(2 of div.foo)")
 
     # Should check element name
-    expect_true(grepl("name() = 'div'", xpath, fixed = TRUE))
+    expect_true(grepl("self::div", xpath, fixed = TRUE))
 
     # Should check class
     expect_true(grepl("foo", xpath))

@@ -1,46 +1,63 @@
-context("series")
-
 test_that("parser generates correct series", {
+    # An+B is validated in the parser, so an invalid series never
+    # reaches parse_series() through parse(); tokenize the argument on
+    # its own to exercise parse_series() directly. The tokens are the
+    # ones the parser would collect, minus the trailing EOF.
     series <- function(css) {
-        selector <- parse(paste0(":nth-child(", css, ")"))[[1]]
-        args <- selector$parsed_tree$arguments
-        parse_series(args)
+        tokens <- Filter(function(token) token$type != "EOF", tokenize(css))
+        parse_series(tokens)
     }
 
-    expect_that(series("1n+3"), equals(c(1, 3)))
-    expect_that(series("1n +3"), equals(c(1, 3)))
-    expect_that(series("1n + 3"), equals(c(1, 3)))
-    expect_that(series("1n+ 3"), equals(c(1, 3)))
-    expect_that(series("1n-3"), equals(c(1, -3)))
-    expect_that(series("1n -3"), equals(c(1, -3)))
-    expect_that(series("1n - 3"), equals(c(1, -3)))
-    expect_that(series("1n- 3"), equals(c(1, -3)))
-    expect_that(series("n-5"), equals(c(1, -5)))
-    expect_that(series("odd"), equals(c(2, 1)))
-    expect_that(series("even"), equals(c(2, 0)))
-    expect_that(series("3n"), equals(c(3, 0)))
-    expect_that(series("n"), equals(c(1, 0)))
-    expect_that(series("+n"), equals(c(1, 0)))
-    expect_that(series("-n"), equals(c(-1, 0)))
-    expect_that(series("5"), equals(c(0, 5)))
-    expect_that(series("foo"), equals(NULL))
-    expect_that(series("n+"), equals(NULL))
+    expect_equal(series("1n+3"), c(1, 3))
+    expect_equal(series("1n +3"), c(1, 3))
+    expect_equal(series("1n + 3"), c(1, 3))
+    expect_equal(series("1n+ 3"), c(1, 3))
+    expect_equal(series("1n-3"), c(1, -3))
+    expect_equal(series("1n -3"), c(1, -3))
+    expect_equal(series("1n - 3"), c(1, -3))
+    expect_equal(series("1n- 3"), c(1, -3))
+    expect_equal(series("n-5"), c(1, -5))
+    expect_equal(series("odd"), c(2, 1))
+    expect_equal(series("even"), c(2, 0))
+    expect_equal(series("3n"), c(3, 0))
+    expect_equal(series("n"), c(1, 0))
+    expect_equal(series("+n"), c(1, 0))
+    expect_equal(series("-n"), c(-1, 0))
+    expect_equal(series("5"), c(0, 5))
+    expect_equal(series("foo"), NULL)
+    expect_equal(series("n+"), NULL)
+    # an escaped digit is a name character, so these are identifiers
+    # rather than integers, and no An+B production accepts them
+    expect_equal(series("\\32"), NULL)
+    expect_equal(series("2n+\\31"), NULL)
+    # while an escape spelling a letter leaves an identifier An+B admits
+    expect_equal(series("\\32 \\6e"), NULL)
+    expect_equal(series("2\\6e"), c(2, 0))
+    expect_equal(series("\\6e-5"), c(1, -5))
+    # a name written onto a number is its unit, and no production takes
+    # a dimension in any shape but '2n', '2n-' or '2n-1'
+    expect_equal(series("1of"), NULL)
+    expect_equal(series("2n+1of"), NULL)
+    expect_equal(series("2x"), NULL)
+    # an escaped sign is a name character too, so this is the unit
+    # "n+1" rather than the '2n' and B of 1 its text reads as
+    expect_equal(series("2n\\2b 1"), NULL)
 })
 
 test_that("series are parsed case-insensitively", {
     xpath <- function(css) css_to_xpath(paste0("e:nth-child(", css, ")"))
 
-    expect_that(xpath("2N"), equals(xpath("2n")))
-    expect_that(xpath("ODD"), equals(xpath("odd")))
-    expect_that(xpath("EVEN"), equals(xpath("even")))
-    expect_that(xpath("Odd"), equals(xpath("odd")))
-    expect_that(xpath("eVen"), equals(xpath("even")))
-    expect_that(xpath("N"), equals(xpath("n")))
-    expect_that(xpath("N+1"), equals(xpath("n+1")))
-    expect_that(xpath("-N+3"), equals(xpath("-n+3")))
-    expect_that(xpath("2N+1"), equals(xpath("2n+1")))
-    expect_that(css_to_xpath("e:nth-last-of-type(2N)"),
-                equals(css_to_xpath("e:nth-last-of-type(2n)")))
+    expect_equal(xpath("2N"), xpath("2n"))
+    expect_equal(xpath("ODD"), xpath("odd"))
+    expect_equal(xpath("EVEN"), xpath("even"))
+    expect_equal(xpath("Odd"), xpath("odd"))
+    expect_equal(xpath("eVen"), xpath("even"))
+    expect_equal(xpath("N"), xpath("n"))
+    expect_equal(xpath("N+1"), xpath("n+1"))
+    expect_equal(xpath("-N+3"), xpath("-n+3"))
+    expect_equal(xpath("2N+1"), xpath("2n+1"))
+    expect_equal(css_to_xpath("e:nth-last-of-type(2N)"),
+                 css_to_xpath("e:nth-last-of-type(2n)"))
 
     # Genuinely invalid input must still error
     expect_error(css_to_xpath("e:nth-child(2x)"))
@@ -48,16 +65,96 @@ test_that("series are parsed case-insensitively", {
     expect_error(css_to_xpath("e:nth-child(m+1)"))
 })
 
+test_that("An+B is read from tokens, so an escaped digit is not one", {
+    err <- function(css) {
+        tryCatch(css_to_xpath(css), error = function(e) conditionMessage(e))
+    }
+    # css-syntax-3: an escape can only begin an identifier, never a
+    # number, so '\32 ' is the name "2" and matches no An+B production.
+    # Browsers reject these; selectr used to accept them, having decoded
+    # the escapes before applying the grammar.
+    expect_match(err(":nth-child(\\32)"),
+                 paste0("^Invalid An\\+B expression in :nth-child\\(\\): ",
+                        "an escape spells a name, so '2' is an identifier"))
+    expect_error(css_to_xpath(":nth-child(\\32 n)"))
+    expect_error(css_to_xpath(":nth-child(+\\32)"))
+    expect_error(css_to_xpath(":nth-child(2n+\\31)"))
+    expect_error(css_to_xpath(":nth-last-of-type(\\31)"))
+    # the caret points at the identifier, not at the whole argument
+    expect_match(err("li:nth-child(2n+\\31)"), "\n  \\| {17}\\^$")
+
+    # an escape spelling a letter is fine, being an identifier in both
+    # readings: these are the ordinary keyword and 'n' forms
+    expect_equal(css_to_xpath(":nth-child(\\65ven)"),
+                 css_to_xpath(":nth-child(even)"))
+    expect_equal(css_to_xpath(":nth-child(2\\n)"),
+                 css_to_xpath(":nth-child(2n)"))
+    expect_equal(css_to_xpath(":nth-child(-\\6e)"),
+                 css_to_xpath(":nth-child(-n)"))
+    # <ndashdigit-ident>: the digits belong to the identifier here, so
+    # writing any part of it as an escape is still valid
+    expect_equal(css_to_xpath(":nth-child(\\6e-1)"),
+                 css_to_xpath(":nth-child(n-1)"))
+    expect_equal(css_to_xpath(":nth-child(2n\\2d 1)"),
+                 css_to_xpath(":nth-child(2n-1)"))
+
+    # the sign before B is a delimiter, not a name: an escaped '-' is
+    # rejected even though the text it decodes to spells a valid series
+    expect_error(css_to_xpath(":nth-child(2n \\2d  1)"))
+    expect_equal(css_to_xpath(":nth-child(2n - 1)"),
+                 css_to_xpath(":nth-child(2n-1)"))
+})
+
+test_that("a number and the name after it are one token, so 'of' needs a space", { # nolint: line_length_linter.
+    err <- function(css) {
+        tryCatch(css_to_xpath(css), error = function(e) conditionMessage(e))
+    }
+    # css-syntax-3 "consume a numeric token": a number with something
+    # that would start an identifier after it is a single dimension, so
+    # ':nth-child(2n+1of b)' is the dimensions '2n' and '+1of'. An+B has
+    # productions for '<n-dimension> <signed-integer>' and for
+    # '<integer>', but for a dimension in neither place, so browsers
+    # reject these; selectr used to read the '+1of' as the integer 1 and
+    # the 'of' keyword, and translate the selector.
+    expect_match(err("a:nth-child(2n+1of b)"),
+                 paste0("^Invalid An\\+B expression in :nth-child\\(\\): ",
+                        "a name written onto a number is part of it, so ",
+                        "'\\+1of' is a single dimension, which An\\+B does ",
+                        "not allow\\. Write '\\+1 of' for the 'of' keyword"))
+    expect_error(css_to_xpath("a:nth-child(1of b)"))
+    expect_error(css_to_xpath("a:nth-child(n+1of b)"))
+    expect_error(css_to_xpath("a:nth-child(-n+1of b)"))
+    expect_error(css_to_xpath("a:nth-last-child(2n+1of b)"))
+    # the caret goes on the dimension, not on the whole argument
+    expect_equal(tryCatch(css_to_xpath("a:nth-child(2n+1of b)"),
+                          error = identity)$pos, 15)
+    # the 'of' keyword is not available to the of-type variants at all,
+    # so their message offers no spelling of it
+    of_type <- err("a:nth-of-type(1of b)")
+    expect_match(of_type, "'1of' is a single dimension, which An\\+B does not allow") # nolint: line_length_linter.
+    expect_false(grepl("'of' keyword", of_type, fixed = TRUE))
+    # a dimension is only wrong in the shapes no production covers: the
+    # A value is one whenever it is written with a coefficient
+    expect_equal(css_to_xpath("a:nth-child(2n+1 of b)"),
+                 paste0("descendant-or-self::a[count(preceding-sibling::*",
+                        "[self::b]) mod 2 = 0 and self::b]"))
+    expect_equal(css_to_xpath("a:nth-child(1 of b)"),
+                 paste0("descendant-or-self::a[count(preceding-sibling::*",
+                        "[self::b]) = 0 and self::b]"))
+    expect_equal(css_to_xpath(":nth-child(2n-1)"),
+                 css_to_xpath(":nth-child(2n - 1)"))
+})
+
 test_that("whitespace is only permitted around the sign before B", {
     # spec-legal placements keep working
-    expect_that(css_to_xpath("e:nth-child(2n + 1)"),
-                equals(css_to_xpath("e:nth-child(2n+1)")))
-    expect_that(css_to_xpath("e:nth-child(2n +1)"),
-                equals(css_to_xpath("e:nth-child(2n+1)")))
-    expect_that(css_to_xpath("e:nth-child(n+ 1)"),
-                equals(css_to_xpath("e:nth-child(n+1)")))
-    expect_that(css_to_xpath("e:nth-child( 2n+1 )"),
-                equals(css_to_xpath("e:nth-child(2n+1)")))
+    expect_equal(css_to_xpath("e:nth-child(2n + 1)"),
+                 css_to_xpath("e:nth-child(2n+1)"))
+    expect_equal(css_to_xpath("e:nth-child(2n +1)"),
+                 css_to_xpath("e:nth-child(2n+1)"))
+    expect_equal(css_to_xpath("e:nth-child(n+ 1)"),
+                 css_to_xpath("e:nth-child(n+1)"))
+    expect_equal(css_to_xpath("e:nth-child( 2n+1 )"),
+                 css_to_xpath("e:nth-child(2n+1)"))
     # whitespace anywhere else is invalid (css-syntax-3 An+B grammar)
     expect_error(css_to_xpath("e:nth-child(3 7)"))
     expect_error(css_to_xpath("e:nth-child(2 n)"))
@@ -77,6 +174,112 @@ test_that("non-integer A and B values are rejected", {
     expect_error(css_to_xpath("e:nth-child(2.5n+1)"))
     expect_error(css_to_xpath("e:nth-child(2n+1.5)"))
     # signed integers and leading zeros remain valid
-    expect_that(css_to_xpath("e:nth-child(+05)"),
-                equals(css_to_xpath("e:nth-child(5)")))
+    expect_equal(css_to_xpath("e:nth-child(+05)"),
+                 css_to_xpath("e:nth-child(5)"))
+})
+
+test_that("an invalid An+B argument is rejected at parse time", {
+    err <- function(css) {
+        tryCatch(css_to_xpath(css), error = function(e) conditionMessage(e))
+    }
+
+    # the message names the pseudo-class that was written, not nth-child
+    expect_match(err("li:nth-last-of-type(foo)"),
+                 "^Invalid An\\+B expression in :nth-last-of-type\\(\\): 'foo'")
+    expect_match(err("li:nth-of-type(2n+)"),
+                 "^Invalid An\\+B expression in :nth-of-type\\(\\): '2n\\+'")
+    expect_match(err("li:nth-last-child(o dd)"),
+                 "^Invalid An\\+B expression in :nth-last-child\\(\\): 'o dd'")
+    # the name is canonicalised to lower case, as ":... is unknown" is
+    expect_match(err("li:NTH-CHILD(foo)"),
+                 "^Invalid An\\+B expression in :nth-child\\(\\): 'foo'")
+
+    # 'of' is only part of the :nth-child()/:nth-last-child() grammar,
+    # and the message says so instead of quoting the whole argument
+    expect_match(err("li:nth-of-type(2 of li)"),
+                 paste0("^Invalid An\\+B expression in :nth-of-type\\(\\): ",
+                        "'of' is only allowed in :nth-child\\(\\) and ",
+                        ":nth-last-child\\(\\)"))
+    expect_match(err("li:nth-last-of-type(2 OF li)"),
+                 "'of' is only allowed in :nth-child\\(\\)")
+
+    # a quoted argument is named as such rather than reported by the
+    # generic "not allowed in series" message the translator used to give
+    expect_match(err(":nth-child('2')"),
+                 paste0("^Invalid An\\+B expression in :nth-child\\(\\): ",
+                        "a quoted string is not allowed"))
+
+    # An empty argument list is still an argument-count error
+    expect_match(err(":nth-child()"),
+                 "^Expected at least one argument, got <DELIM '\\)' at 12>")
+})
+
+test_that("an A or B beyond the integer range is saturated", {
+    series <- function(css) {
+        tokens <- Filter(function(token) token$type != "EOF", tokenize(css))
+        parse_series(tokens)
+    }
+    imax <- .Machine$integer.max
+
+    # The An+B grammar has no upper bound, so a value R cannot hold as
+    # an integer is clamped to .Machine$integer.max rather than
+    # rejected: no document has that many siblings, so the clamped
+    # series selects exactly what the written one would
+    expect_equal(series("2147483648"), c(0, imax))
+    expect_equal(series("99999999999"), c(0, imax))
+    expect_equal(series("-99999999999"), c(0, -imax))
+    expect_equal(series("99999999999n+1"), c(imax, 1))
+    expect_equal(series("n+99999999999"), c(1, imax))
+    expect_equal(series("-99999999999n-99999999999"), c(-imax, -imax))
+
+    # and the selector translates, rather than erroring
+    expect_equal(css_to_xpath(":nth-child(99999999999)"),
+                 css_to_xpath(paste0(":nth-child(", imax, ")")))
+    expect_equal(css_to_xpath(":nth-child(1000000000000)"),
+                 css_to_xpath(paste0(":nth-child(", imax, ")")))
+    expect_equal(css_to_xpath("a:nth-child(4294967296n)"),
+                 css_to_xpath(paste0("a:nth-child(", imax, "n)")))
+
+    # a huge B still counts down to B-1 without overflowing to NA, in
+    # either direction
+    expect_equal(css_to_xpath(":nth-child(99999999999)"),
+                 paste0("descendant-or-self::*[count(preceding-sibling::*) = ",
+                        imax - 1, "]"))
+    expect_equal(css_to_xpath(":nth-child(-99999999999)"),
+                 "descendant-or-self::*[0]")
+    expect_equal(css_to_xpath(":nth-child(n-99999999999)"),
+                 "descendant-or-self::*")
+    expect_equal(css_to_xpath(":nth-child(-n+99999999999)"),
+                 paste0("descendant-or-self::*[count(preceding-sibling::*) <= ",
+                        imax - 1, "]"))
+
+    # the saturated value is written out in full, not in E notation
+    expect_false(grepl("e+", css_to_xpath(":nth-child(99999999999n+1)"),
+                       fixed = TRUE))
+})
+
+test_that("An+B errors carry a source position", {
+    err <- function(css) {
+        tryCatch(css_to_xpath(css), error = function(e) conditionMessage(e))
+    }
+
+    # the caret sits under the start of the series ...
+    expect_match(err("li:nth-child(foo)"),
+                 "\n  \\|\n  \\| li:nth-child\\(foo\\)\n  \\|              \\^",
+                 perl = TRUE)
+    # ... under the offending string ...
+    expect_match(err("li:nth-child('2')"),
+                 "\n  \\|\n  \\| li:nth-child\\('2'\\)\n  \\|              \\^",
+                 perl = TRUE)
+    # ... and under the misplaced 'of' keyword
+    expect_match(err("li:nth-of-type(2 of li)"),
+                 "\n  \\| li:nth-of-type\\(2 of li\\)\n  \\|                  \\^",
+                 perl = TRUE)
+
+    # and, being parse errors now, they are structured conditions like
+    # every other syntax error
+    e <- tryCatch(css_to_xpath("li:nth-child(foo)"), error = identity)
+    expect_s3_class(e, "selectr_parse_error")
+    expect_equal(e$pos, 14)
+    expect_equal(e$selector, "li:nth-child(foo)")
 })
