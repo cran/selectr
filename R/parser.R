@@ -1,4 +1,4 @@
-escape <- paste0("\\\\([0-9a-fA-F]{1,6})(\r\n|[ \n\r\t\f])?",
+escape <- paste0("\\\\[0-9a-fA-F]{1,6}(?:\r\n|[ \n\r\t\f])?",
                  "|\\\\[^\n\r\f0-9a-fA-F]",
                  # css-syntax-3: a backslash immediately followed by EOF is
                  # still a valid escape (only a following newline is not);
@@ -11,177 +11,164 @@ TokenMacros <- list(escape = escape,
                     string_escape = paste0("\\\\(?:\n|\r\n|\r|\f)|", escape),
                     nonascii = nonascii)
 
-# Base class for every parse-tree node below. Only repr() is
-# type-specific; show() and the "ClassName[...]" wrapping that most
-# repr() implementations use are common enough to live here once.
-Node <- R6Class("Node",
-    public = list(
-        # The name first_class_name() reports for this node, in place
-        # of its R6 class name. NULL for every class except
-        # ClassSelector, whose class is named to avoid an R.oo clash
-        # (fixed in 0.4-1 by renaming the R6 class) even though its
-        # repr() - matching the Python cssselect output - still needs
-        # to read "Class".
-        repr_name = NULL,
-        # Wraps 'content' as "ClassName[content]", the shape used by
-        # every repr() below except Selector's (which has no brackets)
-        # and CombinedSelector's (which wraps once per spine node, not
-        # just 'self').
-        repr_wrap = function(content) {
-            paste0(first_class_name(self), "[", content, "]")
-        },
-        show = function() { # nocov start
-            cat(self$repr(), "\n")
-        } # nocov end
-    )
-)
+#### Parse tree
 
-Selector <- R6Class("Selector",
-    inherit = Node,
-    public = list(
-        parsed_tree = NULL,
-        pseudo_element = NULL,
-        # Where the pseudo-element's ':' or '::' sits in the selector
-        # text, so that the translator can point at it when it refuses
-        # the pseudo-element; NULL when there is none, or when the node
-        # was built by hand rather than by the parser
-        pseudo_element_pos = NULL,
-        initialize = function(tree, pseudo_element = NULL,
-                              pseudo_element_pos = NULL) {
-            self$parsed_tree <- tree
-            if (!is.null(pseudo_element))
-                self$pseudo_element <- ascii_lower(pseudo_element)
-            self$pseudo_element_pos <- pseudo_element_pos
-        },
-        repr = function() {
-            pseudo_el <-
-                if (is.null(self$pseudo_element)) ""
-                else paste0("::", self$pseudo_element)
-            paste0(self$parsed_tree$repr(), pseudo_el)
-        },
-        specificity = function() {
-            specs <- self$parsed_tree$specificity()
-            if (!is.null(self$pseudo_element))
-                specs[3] <- specs[3] + 1
-            specs
-        }
-    )
-)
+# The parse tree is an immutable value, built once by the parser and
+# then only read by repr(), specificity() and the translator, so its
+# nodes are plain lists with a class attribute rather than R6 objects
+# (which cost tens of microseconds each to construct, mostly for the
+# inheritance machinery). The first class names the node type, which
+# is what first_class_name() and the translator's xpath() dispatch key
+# on; every node also carries "selectr_node" for printing.
+#
+# Each constructor lists every field of its node, NULL or not, so that
+# reading one with `$` finds it exactly rather than partially matching
+# a longer name (e.g. 'name' against 'namespace').
+new_node <- function(type, ..., subclass = NULL) {
+    structure(list(...), class = c(type, subclass, "selectr_node"))
+}
 
-ClassSelector <- R6Class("ClassSelector",
-    inherit = Node,
-    public = list(
-        repr_name = "Class",
-        selector = NULL,
-        class_name = NULL,
-        initialize = function(selector, class_name) {
-            self$selector <- selector
-            self$class_name <- class_name
-        },
-        repr = function() {
-            self$repr_wrap(paste0(self$selector$repr(), ".", self$class_name))
-        },
-        specificity = function() {
-            specs <- self$selector$specificity()
-            specs[2] <- specs[2] + 1
-            specs
-        }
-    )
-)
+# The "ClassName[...]" rendering of a parse-tree node, e.g.
+# "Element[a]" or "Class[Element[*].foo]".
+repr <- function(node) UseMethod("repr")
 
-Function <- R6Class("Function",
-    inherit = Node,
-    public = list(
-        selector = NULL,
-        name = NULL,
-        arguments = NULL,
-        selector_list = NULL,
-        # The (a, b) pair for an An+B (nth-*()) function, already
-        # validated and parsed by validate_series() at parse time; NULL
-        # for every other function
-        series = NULL,
-        # The comma-separated items of a :lang() argument list, one
-        # token each, reassembled at parse time (see
-        # lang_range_token()); NULL for every other function
-        ranges = NULL,
-        # Where the pseudo-class's ':' sits in the selector text, for
-        # the translator to point at when it cannot express the
-        # pseudo-class; NULL for a hand-built node
-        pos = NULL,
-        initialize = function(selector, name, arguments, selector_list = NULL,
-                              series = NULL, ranges = NULL, pos = NULL) {
-            self$selector <- selector
-            self$name <- ascii_lower(name)
-            self$arguments <- arguments
-            self$selector_list <- selector_list
-            self$series <- series
-            self$ranges <- ranges
-            self$pos <- pos
-        },
-        repr = function() {
-            token_values <- lapply(self$arguments,
-                function(token) paste0("'", token$value, "'"))
-            token_values <- paste0(unlist(token_values), collapse = ", ")
-            token_values <- paste0("[", token_values, "]")
-            selector_list_repr <- ""
-            if (!is.null(self$selector_list)) {
-                selector_list_repr <- paste0(
-                    " of ",
-                    paste0(sapply(self$selector_list, function(s) s$repr()), collapse = ", ")
-                )
-            }
-            self$repr_wrap(paste0(
-                self$selector$repr(),
-                ":",
-                self$name,
-                "(",
-                token_values,
-                selector_list_repr,
-                ")"))
-        },
-        argument_types = function() {
-            token_types <- lapply(self$arguments, function(token) token$type)
-            unlist(token_types)
-        },
-        specificity = function() {
-            specs <- self$selector$specificity()
-            specs[2] <- specs[2] + 1
-            if (!is.null(self$selector_list) && length(self$selector_list) > 0)
-                specs <- specs + max_specificity(self$selector_list)
-            specs
-        }
-    )
-)
+# A node's specificity, as a length 3 (id, class, element) vector
+specificity <- function(node) UseMethod("specificity")
 
-Pseudo <- R6Class("Pseudo",
-    inherit = Node,
-    public = list(
-        selector = NULL,
-        ident = NULL,
-        # See Function$pos
-        pos = NULL,
-        initialize = function(selector, ident, pos = NULL) {
-            self$selector <- selector
-            self$ident <- ascii_lower(ident)
-            self$pos <- pos
-        },
-        repr = function() {
-            self$repr_wrap(paste0(self$selector$repr(), ":", self$ident))
-        },
-        specificity = function() {
-            specs <- self$selector$specificity()
-            specs[2] <- specs[2] + 1
-            specs
-        }
-    )
-)
+# Wraps 'content' as "ClassName[content]", the shape used by every
+# repr() below except Selector's (which has no brackets) and
+# CombinedSelector's (which wraps once per spine node).
+repr_wrap <- function(node, content) {
+    paste0(first_class_name(node), "[", content, "]")
+}
+
+print.selectr_node <- function(x, ...) { # nocov start
+    cat(repr(x), "\n")
+    invisible(x)
+} # nocov end
+
+Selector <- function(tree, pseudo_element = NULL, pseudo_element_pos = NULL) {
+    if (!is.null(pseudo_element))
+        pseudo_element <- ascii_lower(pseudo_element)
+    new_node("Selector",
+             parsed_tree = tree,
+             pseudo_element = pseudo_element,
+             # Where the pseudo-element's ':' or '::' sits in the
+             # selector text, so that the translator can point at it
+             # when it refuses the pseudo-element; NULL when there is
+             # none, or when the node was built by hand rather than by
+             # the parser
+             pseudo_element_pos = pseudo_element_pos)
+}
+
+repr.Selector <- function(node) {
+    pseudo_el <-
+        if (is.null(node$pseudo_element)) ""
+        else paste0("::", node$pseudo_element)
+    paste0(repr(node$parsed_tree), pseudo_el)
+}
+
+specificity.Selector <- function(node) {
+    specs <- specificity(node$parsed_tree)
+    if (!is.null(node$pseudo_element))
+        specs[3] <- specs[3] + 1
+    specs
+}
+
+# The class is named to avoid an R.oo clash (fixed in 0.4-1 by
+# renaming the class), even though its repr() - matching the Python
+# cssselect output - and its translator method still read "Class"; see
+# first_class_name()
+ClassSelector <- function(selector, class_name) {
+    new_node("ClassSelector", selector = selector, class_name = class_name)
+}
+
+repr.ClassSelector <- function(node) {
+    repr_wrap(node, paste0(repr(node$selector), ".", node$class_name))
+}
+
+specificity.ClassSelector <- function(node) {
+    specs <- specificity(node$selector)
+    specs[2] <- specs[2] + 1
+    specs
+}
+
+Function <- function(selector, name, arguments, selector_list = NULL,
+                     series = NULL, ranges = NULL, pos = NULL) {
+    new_node("Function",
+             selector = selector,
+             name = ascii_lower(name),
+             arguments = arguments,
+             selector_list = selector_list,
+             # The (a, b) pair for an An+B (nth-*()) function, already
+             # validated and parsed by validate_series() at parse time;
+             # NULL for every other function
+             series = series,
+             # The comma-separated items of a :lang() argument list, one
+             # token each, reassembled at parse time (see
+             # lang_range_token()); NULL for every other function
+             ranges = ranges,
+             # Where the pseudo-class's ':' sits in the selector text,
+             # for the translator to point at when it cannot express the
+             # pseudo-class; NULL for a hand-built node
+             pos = pos)
+}
+
+repr.Function <- function(node) {
+    token_values <- lapply(node$arguments,
+        function(token) paste0("'", token$value, "'"))
+    token_values <- paste0(unlist(token_values), collapse = ", ")
+    token_values <- paste0("[", token_values, "]")
+    selector_list_repr <- ""
+    if (!is.null(node$selector_list)) {
+        selector_list_repr <- paste0(
+            " of ",
+            paste0(vapply(node$selector_list, repr, character(1)),
+                   collapse = ", ")
+        )
+    }
+    repr_wrap(node, paste0(
+        repr(node$selector),
+        ":",
+        node$name,
+        "(",
+        token_values,
+        selector_list_repr,
+        ")"))
+}
+
+specificity.Function <- function(node) {
+    specs <- specificity(node$selector)
+    specs[2] <- specs[2] + 1
+    if (!is.null(node$selector_list) && length(node$selector_list) > 0)
+        specs <- specs + max_specificity(node$selector_list)
+    specs
+}
+
+Pseudo <- function(selector, ident, pos = NULL) {
+    new_node("Pseudo",
+             selector = selector,
+             ident = ascii_lower(ident),
+             # See Function()'s 'pos'
+             pos = pos)
+}
+
+repr.Pseudo <- function(node) {
+    repr_wrap(node, paste0(repr(node$selector), ":", node$ident))
+}
+
+specificity.Pseudo <- function(node) {
+    specs <- specificity(node$selector)
+    specs[2] <- specs[2] + 1
+    specs
+}
 
 # :not(), :is() and :has() all take the specificity of their most
 # specific argument (CSS Selectors Level 4). vapply() pins the result to
 # a 3 x n matrix, so one argument is handled just like many; the caller
 # is responsible for the empty case, where there is no such argument.
 max_specificity <- function(selector_list) {
-    specs <- vapply(selector_list, function(s) s$specificity(), numeric(3))
+    specs <- vapply(selector_list, specificity, numeric(3))
     # most specific first: (id, class, element) descending
     specs[, order(-specs[1, ], -specs[2, ], -specs[3, ])[1]]
 }
@@ -195,246 +182,190 @@ max_specificity <- function(selector_list) {
 # which requires at least one selector.
 selector_list_specificity <- function(selector, selector_list,
                                       ignore_list = FALSE) {
-    base_specs <- selector$specificity()
+    base_specs <- specificity(selector)
     if (ignore_list || length(selector_list) == 0)
         return(base_specs)
     base_specs + max_specificity(selector_list)
 }
 
-# Base class for the four selector-list pseudo-classes (:not(), :is(),
-# :where(), :has()), which differ only in the pseudo-class name printed
-# by repr() and, for :where(), zero specificity from the argument list.
-# Thin subclasses below exist only so the translator's first_class_name()
-# dispatch (xpath_negation(), xpath_matching(), xpath_where(),
-# xpath_has()) still sees one method name per pseudo-class.
-SelectorListPseudo <- R6Class("SelectorListPseudo",
-    inherit = Node,
-    public = list(
-        selector = NULL,
-        selector_list = NULL,
-        pseudo_name = NULL,
-        zero_specificity = FALSE,
-        initialize = function(selector, selector_list, pseudo_name,
-                              zero_specificity = FALSE) {
-            self$selector <- selector
-            self$selector_list <- selector_list
-            self$pseudo_name <- pseudo_name
-            self$zero_specificity <- zero_specificity
-        },
-        repr = function() {
-            self$repr_wrap(paste0(
-                self$selector$repr(),
-                ":", self$pseudo_name, "(",
-                paste0(
-                    sapply(self$selector_list, function(s) s$repr()),
-                    collapse = ", "
-                ),
-                ")"))
-        },
-        specificity = function() {
-            selector_list_specificity(self$selector, self$selector_list,
-                                      ignore_list = self$zero_specificity)
-        }
-    )
-)
+# The four selector-list pseudo-classes (:not(), :is(), :where(),
+# :has()) differ only in the pseudo-class name printed by repr() and,
+# for :where(), zero specificity from the argument list, so they share
+# the "SelectorListPseudo" methods below. Each still has a type of its
+# own so that the translator's first_class_name() dispatch
+# (xpath_negation(), xpath_matching(), xpath_where(), xpath_has()) sees
+# one method name per pseudo-class.
+SelectorListPseudo <- function(type, selector, selector_list, pseudo_name,
+                               zero_specificity = FALSE) {
+    new_node(type,
+             selector = selector,
+             selector_list = selector_list,
+             pseudo_name = pseudo_name,
+             zero_specificity = zero_specificity,
+             subclass = "SelectorListPseudo")
+}
 
-Negation <- R6Class("Negation",
-    inherit = SelectorListPseudo,
-    public = list(
-        initialize = function(selector, selector_list) {
-            super$initialize(selector, selector_list, "not")
-        }
-    )
-)
+repr.SelectorListPseudo <- function(node) {
+    repr_wrap(node, paste0(
+        repr(node$selector),
+        ":", node$pseudo_name, "(",
+        paste0(vapply(node$selector_list, repr, character(1)),
+               collapse = ", "),
+        ")"))
+}
 
-Matching <- R6Class("Matching",
-    inherit = SelectorListPseudo,
-    public = list(
-        initialize = function(selector, selector_list) {
-            super$initialize(selector, selector_list, "is")
-        }
-    )
-)
+specificity.SelectorListPseudo <- function(node) {
+    selector_list_specificity(node$selector, node$selector_list,
+                              ignore_list = node$zero_specificity)
+}
 
-Where <- R6Class("Where",
-    inherit = SelectorListPseudo,
-    public = list(
-        initialize = function(selector, selector_list) {
-            super$initialize(selector, selector_list, "where",
-                             zero_specificity = TRUE)
-        }
-    )
-)
+Negation <- function(selector, selector_list) {
+    SelectorListPseudo("Negation", selector, selector_list, "not")
+}
+
+Matching <- function(selector, selector_list) {
+    SelectorListPseudo("Matching", selector, selector_list, "is")
+}
+
+Where <- function(selector, selector_list) {
+    SelectorListPseudo("Where", selector, selector_list, "where",
+                       zero_specificity = TRUE)
+}
+
+Has <- function(selector, selector_list) {
+    SelectorListPseudo("Has", selector, selector_list, "has")
+}
 
 # A :has() argument with an explicit leading combinator (selectors-4
 # <relative-selector>): wraps the parsed selector alongside its combinator.
 # Arguments with the omitted (implied descendant) combinator are stored
-# unwrapped in Has$selector_list.
-RelativeSelector <- R6Class("RelativeSelector",
-    inherit = Node,
-    public = list(
-        combinator = NULL,
-        selector = NULL,
-        initialize = function(combinator, selector) {
-            self$combinator <- combinator
-            self$selector <- selector
-        },
-        repr = function() {
-            self$repr_wrap(paste0(self$combinator, " ", self$selector$repr()))
-        },
-        specificity = function() {
-            # The leading combinator contributes no specificity
-            self$selector$specificity()
-        }
-    )
-)
+# unwrapped in the Has node's selector_list.
+RelativeSelector <- function(combinator, selector) {
+    new_node("RelativeSelector", combinator = combinator, selector = selector)
+}
 
-Has <- R6Class("Has",
-    inherit = SelectorListPseudo,
-    public = list(
-        initialize = function(selector, selector_list) {
-            super$initialize(selector, selector_list, "has")
-        }
-    )
-)
+repr.RelativeSelector <- function(node) {
+    repr_wrap(node, paste0(node$combinator, " ", repr(node$selector)))
+}
 
-Attrib <- R6Class("Attrib",
-    inherit = Node,
-    public = list(
-        selector = NULL,
-        namespace = NULL,
-        attrib = NULL,
-        operator = NULL,
-        value = NULL,
-        flag = NULL,
-        # See Element$any_namespace: '[*|attr]' against '[\2a|attr]'
-        any_namespace = FALSE,
-        initialize = function(selector, namespace, attrib, operator, value,
-                              flag = NULL,
-                              any_namespace = identical(namespace, "*")) {
-            self$selector <- selector
-            self$namespace <- namespace
-            self$any_namespace <- any_namespace
-            self$attrib <- attrib
-            self$operator <- operator
-            self$value <- value
-            self$flag <- flag
-        },
-        repr = function() {
-            attr <-
-                if (!is.null(self$namespace))
-                    paste0(self$namespace, "|", self$attrib)
-                else
-                    self$attrib
-            inner <-
-                if (self$operator == "exists")
-                    attr
-                else
-                    paste0(
-                        attr,
-                        " ",
-                        self$operator,
-                        " '",
-                        self$value,
-                        "'",
-                        if (!is.null(self$flag)) paste0(" ", self$flag) else "")
-            self$repr_wrap(paste0(self$selector$repr(), "[", inner, "]"))
-        },
-        specificity = function() {
-            specs <- self$selector$specificity()
-            specs[2] <- specs[2] + 1
-            specs
-        }
-    )
-)
+specificity.RelativeSelector <- function(node) {
+    # The leading combinator contributes no specificity
+    specificity(node$selector)
+}
 
-Element <- R6Class("Element",
-    inherit = Node,
-    public = list(
-        namespace = NULL,
-        element = NULL,
-        # Whether 'namespace' is the any-namespace wildcard, i.e. the
-        # delimiter '*' of an <ns-prefix>. An <ident-token> that merely
-        # decodes to the same character ('\2a|e') is a prefix *named*
-        # '*', which no @namespace rule can bind, so the two cannot be
-        # told apart by the stored value. Defaults to the reading a
-        # hand-built node would have had before the flag existed.
-        any_namespace = FALSE,
-        initialize = function(namespace = NULL, element = NULL,
-                              any_namespace = identical(namespace, "*")) {
-            self$namespace <- namespace
-            self$element <- element
-            self$any_namespace <- any_namespace
-        },
-        repr = function() {
-            el <-
-                if (!is.null(self$element)) self$element
-                else "*"
-            if (!is.null(self$namespace))
-                el <- paste0(self$namespace, "|", el)
-            self$repr_wrap(el)
-        },
-        specificity = function() {
-            if (!is.null(self$element)) c(0, 0, 1)
-            else rep(0, 3)
-        }
-    )
-)
+Attrib <- function(selector, namespace, attrib, operator, value,
+                   flag = NULL, any_namespace = identical(namespace, "*")) {
+    new_node("Attrib",
+             selector = selector,
+             namespace = namespace,
+             # See Element()'s 'any_namespace': '[*|attr]' against
+             # '[\2a|attr]'
+             any_namespace = any_namespace,
+             attrib = attrib,
+             operator = operator,
+             value = value,
+             flag = flag)
+}
 
-Hash <- R6Class("Hash",
-    inherit = Node,
-    public = list(
-        selector = NULL,
-        id = NULL,
-        initialize = function(selector, id) {
-            self$selector <- selector
-            self$id <- id
-        },
-        repr = function() {
-            self$repr_wrap(paste0(self$selector$repr(), "#", self$id))
-        },
-        specificity = function() {
-            specs <- self$selector$specificity()
-            specs[1] <- specs[1] + 1
-            specs
-        }
-    )
-)
+repr.Attrib <- function(node) {
+    attr <-
+        if (!is.null(node$namespace))
+            paste0(node$namespace, "|", node$attrib)
+        else
+            node$attrib
+    inner <-
+        if (node$operator == "exists")
+            attr
+        else
+            paste0(
+                attr,
+                " ",
+                node$operator,
+                " '",
+                node$value,
+                "'",
+                if (!is.null(node$flag)) paste0(" ", node$flag) else "")
+    repr_wrap(node, paste0(repr(node$selector), "[", inner, "]"))
+}
 
-CombinedSelector <- R6Class("CombinedSelector",
-    inherit = Node,
-    public = list(
-        selector = NULL,
-        combinator = NULL,
-        subselector = NULL,
-        initialize = function(selector, combinator, subselector) {
-            if (is.null(selector))
-                internal_stop("'selector' cannot be NULL")
-            self$selector <- selector
-            self$combinator <- combinator
-            self$subselector <- subselector
-        },
-        repr = function() {
-            spine <- combinator_spine(self)
-            out <- spine$leftmost$repr()
-            for (node in spine$nodes) {
-                comb <-
-                    if (node$combinator == " ") "<followed>"
-                    else node$combinator
-                out <- node$repr_wrap(paste0(out, " ", comb, " ",
-                                             node$subselector$repr()))
-            }
-            out
-        },
-        specificity = function() {
-            spine <- combinator_spine(self)
-            specs <- spine$leftmost$specificity()
-            for (node in spine$nodes)
-                specs <- specs + node$subselector$specificity()
-            specs
-        }
-    )
-)
+specificity.Attrib <- function(node) {
+    specs <- specificity(node$selector)
+    specs[2] <- specs[2] + 1
+    specs
+}
+
+Element <- function(namespace = NULL, element = NULL,
+                    any_namespace = identical(namespace, "*")) {
+    new_node("Element",
+             namespace = namespace,
+             element = element,
+             # Whether 'namespace' is the any-namespace wildcard, i.e.
+             # the delimiter '*' of an <ns-prefix>. An <ident-token>
+             # that merely decodes to the same character ('\2a|e') is a
+             # prefix *named* '*', which no @namespace rule can bind, so
+             # the two cannot be told apart by the stored value.
+             # Defaults to the reading a hand-built node would have had
+             # before the flag existed.
+             any_namespace = any_namespace)
+}
+
+repr.Element <- function(node) {
+    el <-
+        if (!is.null(node$element)) node$element
+        else "*"
+    if (!is.null(node$namespace))
+        el <- paste0(node$namespace, "|", el)
+    repr_wrap(node, el)
+}
+
+specificity.Element <- function(node) {
+    if (!is.null(node$element)) c(0, 0, 1)
+    else rep(0, 3)
+}
+
+Hash <- function(selector, id) {
+    new_node("Hash", selector = selector, id = id)
+}
+
+repr.Hash <- function(node) {
+    repr_wrap(node, paste0(repr(node$selector), "#", node$id))
+}
+
+specificity.Hash <- function(node) {
+    specs <- specificity(node$selector)
+    specs[1] <- specs[1] + 1
+    specs
+}
+
+CombinedSelector <- function(selector, combinator, subselector) {
+    if (is.null(selector))
+        internal_stop("'selector' cannot be NULL")
+    new_node("CombinedSelector",
+             selector = selector,
+             combinator = combinator,
+             subselector = subselector)
+}
+
+repr.CombinedSelector <- function(node) {
+    spine <- combinator_spine(node)
+    out <- repr(spine$leftmost)
+    for (step in spine$nodes) {
+        comb <-
+            if (step$combinator == " ") "<followed>"
+            else step$combinator
+        out <- repr_wrap(step, paste0(out, " ", comb, " ",
+                                      repr(step$subselector)))
+    }
+    out
+}
+
+specificity.CombinedSelector <- function(node) {
+    spine <- combinator_spine(node)
+    specs <- specificity(spine$leftmost)
+    for (step in spine$nodes)
+        specs <- specs + specificity(step$subselector)
+    specs
+}
 
 #### Parser
 
@@ -459,52 +390,48 @@ combinator_spine <- function(selector) {
 # the full tokenize()/parse_selector_group() pipeline would parse to
 # the same result; anything else falls through to the full parser.
 # The name patterns are therefore conservative ASCII subsets of the
-# tokenizer's identifier grammar (match_ident, sans escapes and
-# non-ASCII) and hash grammar (match_hash).
+# tokenizer's identifier grammar (ident_char, sans escapes and
+# non-ASCII) and hash grammar (the HASH alternative of token_re).
 fast_ident <- "[a-zA-Z][a-zA-Z0-9_-]*"
 # An ID must be identifier-shaped, so it cannot start with a digit nor
-# with '-' followed by a digit (see match_ident_start)
+# with '-' followed by a digit (see ident_start)
 fast_id <- "[a-zA-Z_][a-zA-Z0-9_-]*|-[a-zA-Z_-][a-zA-Z0-9_-]*"
 
-# foo
-el_re <- paste0("^[ \t\r\n\f]*(", fast_ident, ")[ \t\r\n\f]*$")
-
-# foo#bar or #bar
-id_re <- paste0("^[ \t\r\n\f]*(", fast_ident, ")?",
-                "#(", fast_id, ")[ \t\r\n\f]*$")
-
-# foo.bar or .bar
-class_re <- paste0("^[ \t\r\n\f]*(", fast_ident, ")?",
-                   "\\.(", fast_ident, ")[ \t\r\n\f]*$")
+# One pattern covers all three shapes, so a selector that takes none
+# of them costs a single match: 'foo', 'foo#bar' or '#bar', and
+# 'foo.bar' or '.bar'. Capture 1 is the element name, capture 2 the ID
+# and capture 3 the class; a selector that is empty or all whitespace
+# also matches, with no capture set. '\z' rather than '$', which
+# PCRE would also let match before a trailing newline.
+fast_re <- paste0("^[ \t\r\n\f]*(", fast_ident, ")?",
+                  "(?:#(", fast_id, ")|\\.(", fast_ident, "))?",
+                  "[ \t\r\n\f]*\\z")
 
 parse <- function(css) {
-    # regmatches() represents an unmatched optional group as "", which
-    # cannot be confused with a present element name since fast_ident
-    # never matches an empty string
-    el_match <- regmatches(css, regexec(el_re, css))[[1]]
-    if (length(el_match))
-        return(list(Selector$new(Element$new(element = el_match[2]))))
-    id_match <- regmatches(css, regexec(id_re, css))[[1]]
-    if (length(id_match))
-        return(list(Selector$new(
-                        Hash$new(
-                            Element$new(
-                                element =
-                                    if (nzchar(id_match[2])) id_match[2]
-                                    else NULL),
-                            id_match[3]))))
-    class_match <- regmatches(css, regexec(class_re, css))[[1]]
-    if (length(class_match))
-        return(list(Selector$new(
-                        ClassSelector$new(
-                            Element$new(
-                                element =
-                                    if (nzchar(class_match[2])) class_match[2]
-                                    else NULL),
-                            class_match[3]))))
+    # regexpr() with capture attributes is several times cheaper than
+    # regexec() + regmatches(), on a hit and a miss alike
+    m <- regexpr(fast_re, css, perl = TRUE)
+    if (m != -1L) {
+        start <- attr(m, "capture.start")
+        len <- attr(m, "capture.length")
+        element <- if (len[1L] > 0L)
+            substr(css, start[1L], start[1L] + len[1L] - 1L)
+        if (len[2L] > 0L)
+            return(list(Selector(
+                            Hash(Element(element = element),
+                                 substr(css, start[2L],
+                                        start[2L] + len[2L] - 1L)))))
+        if (len[3L] > 0L)
+            return(list(Selector(
+                            ClassSelector(Element(element = element),
+                                          substr(css, start[3L],
+                                                 start[3L] + len[3L] - 1L)))))
+        if (!is.null(element))
+            return(list(Selector(Element(element = element))))
+    }
     tryCatch(
         {
-            stream <- TokenStream$new(tokenize(css))
+            stream <- TokenStream(tokenize(css))
             parse_selector_group(stream)
         },
         selectr_parse_error = function(e) {
@@ -523,7 +450,7 @@ parse_selector_group <- function(stream) {
     results <- list()
     while (TRUE) {
         parsed_selector <- parse_selector(stream)
-        results[[i]] <- Selector$new(parsed_selector$result,
+        results[[i]] <- Selector(parsed_selector$result,
                                      parsed_selector$pseudo_element,
                                      parsed_selector$pseudo_element_pos)
         i <- i + 1
@@ -611,7 +538,7 @@ parse_selector <- function(stream) {
         stuff <- parse_simple_selector(stream)
         pseudo_element <- stuff$pseudo_element
         pseudo_element_pos <- stuff$pseudo_element_pos
-        result <- CombinedSelector$new(result, combinator, stuff$result)
+        result <- CombinedSelector(result, combinator, stuff$result)
     }
     list(result = result, pseudo_element = pseudo_element,
          pseudo_element_pos = pseudo_element_pos)
@@ -667,7 +594,7 @@ parse_simple_selector <- function(stream, inside_arguments = FALSE,
         element <- namespace <- NULL
         any_namespace <- FALSE
     }
-    result <- Element$new(namespace, element, any_namespace)
+    result <- Element(namespace, element, any_namespace)
     pseudo_element <- NULL
     # Where the pseudo-element's ':' or '::' sits, kept for the errors
     # that name the pseudo-element from further along the selector
@@ -681,14 +608,14 @@ parse_simple_selector <- function(stream, inside_arguments = FALSE,
         }
         reject_pseudo_element_not_last(pseudo_element, pseudo_element_pos)
         if (peek$type == "HASH") {
-            result <- Hash$new(result, stream$nxt()$value)
+            result <- Hash(result, stream$nxt()$value)
         } else if (token_equality(peek, "DELIM", ".")) {
             stream$nxt()
             after_dot <- stream$peek()
             if (any(after_dot$type == c("NUMBER", "DIMENSION")))
                 reject_invalid_class(paste0(".", after_dot$value),
                                      after_dot$pos)
-            result <- ClassSelector$new(result, stream$next_ident())
+            result <- ClassSelector(result, stream$next_ident())
         } else if (token_equality(peek, "DELIM", "[")) {
             stream$nxt()
             result <- parse_attrib(result, stream)
@@ -718,7 +645,7 @@ parse_simple_selector <- function(stream, inside_arguments = FALSE,
                 next
             }
             if (!token_equality(stream$peek(), "DELIM", "(")) {
-                result <- Pseudo$new(result, ident, peek$pos)
+                result <- Pseudo(result, ident, peek$pos)
                 next
             }
             stream$nxt()
@@ -728,19 +655,19 @@ parse_simple_selector <- function(stream, inside_arguments = FALSE,
                 # :not(), so :not(:not(a)), :is(:not(a)), etc. are valid.
                 selectors <- parse_simple_selector_arguments(stream, "not",
                                                              inside_has = inside_has)
-                result <- Negation$new(result, selectors)
+                result <- Negation(result, selectors)
             } else if (any(lident == c("matches", "is"))) {
                 # :is()/:matches() take a <forgiving-selector-list>, so
                 # an empty argument list is valid (it matches nothing)
                 selectors <- parse_simple_selector_arguments(stream, lident,
                                                              inside_has = inside_has,
                                                              forgiving = TRUE)
-                result <- Matching$new(result, selectors)
+                result <- Matching(result, selectors)
             } else if (lident == "where") {
                 selectors <- parse_simple_selector_arguments(stream, "where",
                                                              inside_has = inside_has,
                                                              forgiving = TRUE)
-                result <- Where$new(result, selectors)
+                result <- Where(result, selectors)
             } else if (lident == "has") {
                 # The :has() argument grammar excludes :has() at any
                 # depth (selectors-4): "nesting :has() is not allowed"
@@ -750,7 +677,7 @@ parse_simple_selector <- function(stream, inside_arguments = FALSE,
                 selectors <- parse_simple_selector_arguments(stream, "has",
                                                              inside_has = TRUE,
                                                              relative = TRUE)
-                result <- Has$new(result, selectors)
+                result <- Has(result, selectors)
             } else {
                 arguments <- list()
                 selector_list <- NULL
@@ -885,7 +812,7 @@ parse_simple_selector <- function(stream, inside_arguments = FALSE,
                     arguments <- Filter(function(a) a$type != "S", arguments)
                 }
 
-                result <- Function$new(result, ident, arguments, selector_list,
+                result <- Function(result, ident, arguments, selector_list,
                                        series = series,
                                        ranges = if (allow_commas) ranges,
                                        pos = peek$pos)
@@ -980,12 +907,12 @@ parse_simple_selector_arguments <- function(stream, function_name = NULL, # noli
             stuff <- parse_simple_selector(stream, inside_arguments = TRUE,
                                            inside_has = inside_has)
             check_no_pseudo_element(stuff)
-            result <- CombinedSelector$new(result, chain_combinator,
+            result <- CombinedSelector(result, chain_combinator,
                                            stuff$result)
         }
 
         if (!is.null(combinator)) {
-            result <- RelativeSelector$new(combinator, result)
+            result <- RelativeSelector(combinator, result)
         }
         arguments[[index]] <- result
         index <- index + 1
@@ -1061,7 +988,7 @@ parse_attrib <- function(selector, stream) {
         # '[rel' means '[rel]'. Anything else before the ']' is still
         # an error
         if (token_equality(nt, "DELIM", "]") || nt$type == "EOF") {
-            return(Attrib$new(selector, namespace, attrib, "exists", NULL,
+            return(Attrib(selector, namespace, attrib, "exists", NULL,
                               any_namespace = any_namespace))
         } else if (token_equality(nt, "DELIM", "=")) {
             op <- "="
@@ -1101,7 +1028,7 @@ parse_attrib <- function(selector, stream) {
     if (!token_equality(nt, "DELIM", "]") && nt$type != "EOF") {
         parse_stop("Expected ']', got ", token_repr(nt), pos = nt$pos)
     }
-    Attrib$new(selector, namespace, attrib, op, value$value, flag,
+    Attrib(selector, namespace, attrib, op, value$value, flag,
                any_namespace = any_namespace)
 }
 
@@ -1454,7 +1381,7 @@ ident_hint <- function(name, prefix) {
            m[2], "\\3", m[3], " ", m[4], "'")
 }
 
-# The only ways match_hash can match a non-ident name are a leading
+# The only ways token_re's HASH alternative can match a non-ident name are a leading
 # digit, a '-' before a digit, and a lone '-', so the two branches here
 # are exhaustive.
 hash_ident_hint <- function(name) {
@@ -1466,36 +1393,70 @@ token_is_delim <- function(token, values) {
     token$type == "DELIM" && token$value %in% values
 }
 
-compile_ <- function(pattern) {
-    function(x) {
-        m <- regexpr(pattern, x, perl = TRUE)
-        if (m == -1L)
-            c(NA_integer_, NA_integer_)
-        else
-            c(m, m + attr(m, "match.length") - 1L)
-    }
-}
-
 delims_2ch <- c("~=", "|=", "^=", "$=", "*=", "::")
 delims_1ch <- c(">", "+", "-", "~", ",", ".", "*", "=", "[", "]", "(", ")", "|", ":", "#")
-delim_escapes <- paste0("\\", delims_1ch, collapse = "|")
-match_whitespace <- compile_("^[ \t\r\n\f]+")
-match_number <- compile_("^[+-]?(?:[0-9]*\\.[0-9]+|[0-9]+)")
-# The escape alternative covers both unicode escapes (e.g. '\31 ') and
+
+# A name character, one escape sequence counting as one character. The
+# escape alternative covers both unicode escapes (e.g. '\31 ') and
 # simple escapes of any non-hex character, which includes all delimiters
-match_hash <- compile_(paste0("^#([_a-zA-Z0-9-]|", nonascii, "|", escape, ")+"))
+ident_char <- paste0("(?:[_a-zA-Z0-9-]|", nonascii, "|", escape, ")")
 # css-syntax-3 "would start an identifier": a name-start code point, or a
 # leading '-' followed by a name-start code point, another '-' or an
 # escape. Only a hash whose name starts an identifier is a hash of type
 # "id", i.e. an ID selector; '#1' is not one.
-match_ident_start <- compile_(paste0("^(--|-?([_a-zA-Z]|", nonascii,
-                                     "|(?:", escape, ")))"))
-match_ident <- compile_(paste0("^([_a-zA-Z0-9-]|", nonascii, "|", escape, ")+"))
+ident_start <- paste0("(?:--|-?(?:[_a-zA-Z]|", nonascii, "|", escape, "))")
+ident_start_re <- paste0("^", ident_start)
 # String content: any character except a newline, backslash, or the
-# quote character, or an escape sequence. Anchored so the match end
-# gives the content length; the closing quote must follow immediately.
-match_string_by_quote <- list("'" = compile_(paste0("^([^\n\r\f\\\\']|", TokenMacros$string_escape, ")*")),
-                              '"' = compile_(paste0('^([^\n\r\f\\\\"]|', TokenMacros$string_escape, ")*")))
+# quote character, or an escape sequence.
+string_content <- function(quote) {
+    paste0("(?:[^\n\r\f\\\\", quote, "]++|", TokenMacros$string_escape, ")*+")
+}
+
+# The whole token grammar as one alternation, which tokenize() runs over
+# the input in a single gregexpr() pass. PCRE takes the first
+# alternative that matches at each position, so they are listed in the
+# order css-syntax-3 "consume a token" tests for them; the named groups
+# say which one matched. Every alternative consumes at least one
+# character and the last one takes any character at all, so the matches
+# tile the input with no gaps.
+token_re <- paste0(
+    "(?<S>[ \t\r\n\f]+)",
+    # css-syntax-3 "consume a numeric token": a number followed
+    # immediately by something that would start an identifier is a
+    # single <dimension-token>, that identifier being its unit, and not
+    # a number with a name beside it
+    "|(?<NUMBER>[+-]?(?:[0-9]*\\.[0-9]+|[0-9]+))",
+    "(?<UNIT>(?=", ident_start, ")", ident_char, "++)?",
+    # A CDC is tested for before an identifier, so '-->' is one token
+    # and not the name '--' followed by a child combinator, even though
+    # '--' does start an ident sequence. A CDC cannot appear anywhere in
+    # a selector; tokenizing it is what lets the parser say so about the
+    # whole of it, at the position it starts.
+    "|(?<CDC>-->)",
+    # "Would start an ident sequence" is narrower than ident_char, which
+    # also matches a lone '-'. A leading digit is claimed by NUMBER
+    # above, so '-' is the only start whose two readings can differ: one
+    # with nothing name-like after it is not a name at all, and falls
+    # through to DELIM, the '-' <delim-token> the specification makes it.
+    "|(?<IDENT>(?=[^-]|", ident_start, ")", ident_char, "++)",
+    "|(?<HASH>#", ident_char, "++)",
+    "|(?<DELIM>[~|^$*]=|::|[>+~,.*=\\[\\]()|:#-])",
+    # A string still open at EOF is auto-closed, so the closing quote is
+    # optional here; tokenize() rejects one stopped short of EOF by a raw
+    # newline.
+    "|(?<STRING>'(?<SQ>", string_content("'"), ")'?",
+    "|\"(?<DQ>", string_content('"'), ")\"?)",
+    # css-syntax-3 "consume comments": runs to the first '*/' after the
+    # opening '/*', so the '*' that opens it cannot also close it ('/*/'
+    # is still open), or to EOF if unterminated
+    "|(?<COMMENT>/\\*[\\s\\S]*?(?:\\*/|\\z))",
+    # The CDC's counterpart, read for the same reason: so that the
+    # parser rejects the construct rather than the tokenizer rejecting
+    # its first character.
+    "|(?<CDO><!--)",
+    "|(?<BAD>[\\s\\S])")
+token_groups <- c("S", "NUMBER", "CDC", "IDENT", "HASH", "DELIM",
+                  "STRING", "COMMENT", "CDO", "BAD")
 
 # Decode a token's escape sequences in one left-to-right pass
 # (css-syntax-3 "consume an escaped code point"): each backslash
@@ -1548,297 +1509,186 @@ decode_escapes <- function(x, newlines = FALSE) {
     x
 }
 
-# Anchored matchers only see the text they are handed, so slicing off the
-# whole remaining input at every position (`substring(s, pos, len_s)`)
-# copies O(n^2) characters over a long selector. Match against a bounded
-# window instead, widening it only when the window might be cutting a
-# token in half.
-token_window <- 64L
-
-# Run `matcher` (an anchored matcher built by compile_()) at `pos`,
-# returning its match bounds relative to `pos` exactly as if it had been
-# handed the whole remaining input.
-#
-# A match is known to be untruncated once it ends at least two characters
-# short of the window: every matcher consumes greedily one character (or
-# one escape sequence) at a time, so a match cut off by the window's end
-# reaches that end -- except in a number, where a window ending just
-# after the '.' of '1.5' loses the fractional alternative and falls back
-# to the shorter integer one, stopping one character short. Both cases
-# are covered by the slack.
-#
-# A failure to match is genuine as soon as the window is three characters
-# wide: every matcher decides on the character at `pos`, apart from a
-# number, which may need a sign and a '.' before its first digit.
-match_window <- function(matcher, s, pos, len_s) {
-    width <- token_window
-    repeat {
-        last <- min(pos + width - 1L, len_s)
-        m <- matcher(substring(s, pos, last))
-        if (last >= len_s ||
-            (if (anyNA(m)) width >= 3L else m[2] < last - pos))
-            return(m)
-        width <- width * 2L
-    }
-}
-
+# The tokenizer makes one gregexpr() pass over the input and then walks
+# the matches, so the regex engine scans each character once. It matches
+# on bytes: in character mode R converts every match offset back to a
+# character offset by counting from the start of the string, which is
+# O(n^2) over a selector with any non-ASCII character in it. The
+# grammar is safe to run on UTF-8 bytes, since every byte of a
+# multibyte character is non-ASCII and so is matched or refused
+# alike, and no token can end partway through one.
 tokenize <- function(s) {
-    pos <- 1
-    i <- 1
+    s <- enc2utf8(s)
     len_s <- nchar(s)
-    # Every token consumes at least one character, so this is an upper
-    # bound (plus the trailing EOF); growing the list one element at a
-    # time would copy it on each append
-    results <- vector("list", len_s + 1L)
-    while (pos <= len_s) {
-        match <- match_window(match_whitespace, s, pos, len_s)
-        if (!anyNA(match) && match[1] == 1) {
-            match_end <- match[2]
-            # A comment between two whitespace runs (or two adjacent
-            # comments) leaves no token behind, so this run may be the
-            # second one seen in a row. Extend the existing S token
-            # instead of emitting a second one, keeping the invariant
-            # that no two S tokens are ever adjacent; the token's pos
-            # stays at the start of the first run for error carets.
-            if (i == 1 || results[[i - 1]]$type != "S") {
-                results[[i]] <- Token("S", " ", pos)
-                i <- i + 1
-            }
-            pos <- pos + match_end
-            next
-        }
-        match <- match_window(match_number, s, pos, len_s)
-        if (!anyNA(match) && match[1] == 1) {
-            match_end <- max(match[1], match[2])
-            value <- substring(s, pos, pos + match_end - 1)
-            # css-syntax-3 "consume a numeric token": a number followed
-            # immediately by something that would start an identifier is
-            # a single <dimension-token>, that identifier being its
-            # unit, and not a number with a name beside it. Every start
-            # match_ident_start accepts is one match_ident carries on
-            # from, so the unit is always there to consume.
-            unit_pos <- pos + match_end
-            starts_unit <- unit_pos <= len_s &&
-                !anyNA(match_window(match_ident_start, s, unit_pos, len_s))
-            if (starts_unit) {
-                unit <- match_window(match_ident, s, unit_pos, len_s)
-                unit_end <- max(unit[1], unit[2])
-                results[[i]] <-
-                    DimensionToken(value,
-                                   substring(s, unit_pos,
-                                             unit_pos + unit_end - 1),
-                                   pos)
-                pos <- unit_pos + unit_end
-            } else {
-                results[[i]] <- Token("NUMBER", value, pos)
-                pos <- pos + match_end
-            }
-            i <- i + 1
-            next
-        }
-        # css-syntax-3 "consume a token" tests for a CDC before it
-        # tests for an identifier, so '-->' is one token and not the
-        # name '--' followed by a child combinator, even though '--'
-        # does start an ident sequence. A CDC cannot appear anywhere
-        # in a selector; tokenizing it is what lets the parser say so
-        # about the whole of it, at the position it starts.
-        if (substring(s, pos, pos + 2) == "-->") {
-            results[[i]] <- Token("CDC", "-->", pos)
-            pos <- pos + 3
-            i <- i + 1
-            next
-        }
-        # css-syntax-3 "would start an ident sequence" is narrower than
-        # match_ident's character class, which also matches a lone '-'.
-        # A leading digit cannot reach here, since match_number above
-        # claims it, so '-' is the only start whose two readings can
-        # differ: one with nothing name-like after it is not a name at
-        # all, and falls through to the delimiter table below, which
-        # gives it the '-' <delim-token> the specification makes it.
-        starts_ident <- substring(s, pos, pos) != "-" ||
-            !anyNA(match_window(match_ident_start, s, pos, len_s))
-        if (starts_ident) {
-            match <- match_window(match_ident, s, pos, len_s)
-            if (!anyNA(match) && match[1] == 1) {
-                match_end <- max(match[1], match[2])
-                value <- substring(s, pos, pos + match_end - 1)
-                results[[i]] <- Token("IDENT", decode_escapes(value), pos)
-                pos <- pos + match_end
-                i <- i + 1
-                next
-            }
-        }
-        match <- match_window(match_hash, s, pos, len_s)
-        if (!anyNA(match) && match[1] == 1) {
-            match_end <- max(match[1], match[2])
-            value <- substring(s, pos, pos + match_end - 1)
-            # The check is on the source text, not the decoded name,
-            # so that an escaped digit ('#\31 ' spells the id '1') stays
-            # legal while the bare digit ('#1') does not.
-            if (anyNA(match_ident_start(substring(value, 2))))
-                parse_stop("Invalid ID selector '", value, "'; ",
-                           hash_ident_hint(substring(value, 2)),
-                           pos = pos)
-            value <- decode_escapes(value)
-            hash_id <- substring(value, 2)
-            results[[i]] <- Token("HASH", hash_id, pos)
-            pos <- pos + match_end
-            i <- i + 1
-            next
-        }
-        # Testing presence of a two char delim at the current position
-        two_ch <- substring(s, pos, pos + 1)
-        if (two_ch %in% delims_2ch) {
-            results[[i]] <- Token("DELIM", two_ch, pos)
-            pos <- pos + 2
-            i <- i + 1
-            next
-        }
-
-        # Testing presence of a single char delim at the current position
-        ch <- substring(s, pos, pos)
-        if (ch %in% delims_1ch) {
-            results[[i]] <- Token("DELIM", ch, pos)
-            pos <- pos + 1
-            i <- i + 1
-            next
-        }
-        if (ch %in% c("'", '"')) {
-            # Match the string content after the opening quote; the
-            # closing quote must follow immediately
-            match <- match_window(match_string_by_quote[[ch]], s, pos + 1, len_s)
-            content_end <- if (anyNA(match)) 0 else match[2]
-            end_quote <- pos + 1 + content_end
-            # A string still open at EOF (content consumed to the end
-            # of the input, including a lone trailing backslash -- see
-            # `escape`) is auto-closed with the consumed value, as
-            # css-syntax requires; only a string stopped short of EOF
-            # by a raw newline is an error
-            if (end_quote <= len_s &&
-                substring(s, end_quote, end_quote) != ch) {
-                parse_stop("Unclosed string", pos = pos)
-            }
-            value <- substring(s, pos + 1, pos + content_end)
-            value <- decode_escapes(value, newlines = TRUE)
-            results[[i]] <- Token("STRING", value, pos)
-            # An auto-closed string has no closing quote to step over,
-            # so the EOF token keeps its position just past the input
-            pos <- min(end_quote, len_s) + 1
-            i <- i + 1
-            next
-        }
-        # Remove comments
-        if (two_ch == "/*") {
-            # Widening windows again: an unterminated '/*' at the start
-            # of a long selector would otherwise copy the whole tail
-            width <- token_window
-            repeat {
-                last <- min(pos + width - 1L, len_s)
-                # as.integer() strips regexpr()'s match.length and
-                # friends, which would otherwise ride along on `pos`
-                # and end up attached to every later token's position
-                rel_pos <- as.integer(regexpr("*/", substring(s, pos, last),
-                                              fixed = TRUE))
-                if (rel_pos != -1L || last >= len_s)
-                    break
-                width <- width * 2L
-            }
-            pos <-
-                if (rel_pos == -1L) {
-                    len_s + 1
-                } else {
-                    pos + rel_pos + 1
-                }
-            next
-        }
-        # The CDC's counterpart (css-syntax-3 "consume a token"). It is
-        # no more valid in a selector than a CDC is, and is read here
-        # for the same reason: so that the parser rejects the construct
-        # rather than the tokenizer rejecting its first character.
-        if (substring(s, pos, pos + 3) == "<!--") {
-            results[[i]] <- Token("CDO", "<!--", pos)
-            pos <- pos + 4
-            i <- i + 1
-            next
-        }
-        # Every successful match ends in 'next', so reaching here means
-        # the character cannot start any token
-        parse_stop("Unexpected character '",
-                   ch,
-                   "'",
-                   pos = pos)
+    eof <- EOFToken(len_s + 1L)
+    m <- gregexpr(token_re, s, perl = TRUE, useBytes = TRUE)[[1]]
+    if (m[1] == -1L)
+        return(list(eof))
+    starts <- as.integer(m)
+    ends <- starts + attr(m, "match.length") - 1L
+    cap_start <- attr(m, "capture.start")
+    cap_len <- attr(m, "capture.length")
+    types <- token_groups[max.col(cap_start[, token_groups, drop = FALSE] > 0L,
+                                  ties.method = "first")]
+    # Byte offsets to the 1-based character positions tokens report
+    positions <- starts
+    n_bytes <- nchar(s, type = "bytes")
+    if (n_bytes > len_s) {
+        bytes <- as.integer(charToRaw(s))
+        char_index <- cumsum(bytes < 0x80L | bytes >= 0xC0L)
+        positions <- char_index[starts]
     }
-    results[[i]] <- EOFToken(pos)
+    # Marked as bytes, substring() slices by byte offset in constant
+    # time rather than walking the string to each character offset
+    s_bytes <- s
+    Encoding(s_bytes) <- "bytes"
+    slice <- function(from, len) {
+        x <- substring(s_bytes, from, from + len - 1L)
+        Encoding(x) <- "UTF-8"
+        x
+    }
+
+    n <- length(types)
+    results <- vector("list", n + 1L)
+    i <- 1L
+    prev_type <- ""
+    for (k in seq_len(n)) {
+        type <- types[k]
+        pos <- positions[k]
+        token <- switch(type,
+            S = {
+                # A comment between two whitespace runs (or two adjacent
+                # comments) leaves no token behind, so this run may be
+                # the second one seen in a row. Keep the first instead
+                # of emitting a second, keeping the invariant that no
+                # two S tokens are ever adjacent; its pos stays at the
+                # start of the first run for error carets.
+                if (prev_type == "S")
+                    next
+                Token("S", " ", pos)
+            },
+            NUMBER = {
+                value <- slice(starts[k], cap_len[k, "NUMBER"])
+                if (cap_start[k, "UNIT"] > 0L)
+                    DimensionToken(value,
+                                   slice(cap_start[k, "UNIT"],
+                                         cap_len[k, "UNIT"]),
+                                   pos)
+                else
+                    Token("NUMBER", value, pos)
+            },
+            IDENT = Token("IDENT",
+                          decode_escapes(slice(starts[k],
+                                               ends[k] - starts[k] + 1L)),
+                          pos),
+            HASH = {
+                name <- slice(starts[k] + 1L, ends[k] - starts[k])
+                # The check is on the source text, not the decoded name,
+                # so that an escaped digit ('#\31 ' spells the id '1')
+                # stays legal while the bare digit ('#1') does not.
+                if (!grepl(ident_start_re, name, perl = TRUE))
+                    parse_stop("Invalid ID selector '#", name, "'; ",
+                               hash_ident_hint(name),
+                               pos = pos)
+                Token("HASH", decode_escapes(name), pos)
+            },
+            STRING = {
+                content_len <- max(cap_len[k, "SQ"], 0L) +
+                    max(cap_len[k, "DQ"], 0L)
+                # No closing quote was consumed and there is input left:
+                # the string was stopped by a raw newline. One open at
+                # EOF (including after a lone trailing backslash -- see
+                # `escape`) is auto-closed with the consumed value, as
+                # css-syntax requires.
+                if (ends[k] - starts[k] == content_len && ends[k] < n_bytes)
+                    parse_stop("Unclosed string", pos = pos)
+                Token("STRING",
+                      decode_escapes(slice(starts[k] + 1L, content_len),
+                                     newlines = TRUE),
+                      pos)
+            },
+            COMMENT = next,
+            BAD = parse_stop("Unexpected character '",
+                             slice(starts[k], 1L), "'",
+                             pos = pos),
+            # CDC, CDO and DELIM are their own source text
+            Token(type, slice(starts[k], ends[k] - starts[k] + 1L), pos))
+        results[[i]] <- token
+        i <- i + 1L
+        prev_type <- type
+    }
+    results[[i]] <- eof
     length(results) <- i
     results
 }
 
-TokenStream <- R6Class("TokenStream",
-    public = list(
-        pos = 1,
-        tokens = NULL,
-        ntokens = 0,
-        # Index of the token most recently returned by nxt(). Positions
-        # are consumed in order, so this doubles as a count of consumed
-        # tokens: parse_simple_selector() only compares it against an
-        # earlier reading to ask whether anything was consumed in
-        # between. The sticky EOF token (see next_token()) leaves pos --
-        # and so this -- alone once it has been consumed the first time.
-        consumed = 0,
-        peeked = list(),
-        peeking = FALSE,
-        initialize = function(tokens) {
-            self$tokens <- tokens
-            self$ntokens <- length(tokens)
-        },
-        nxt = function() {
-            nt <- if (self$peeking) {
-                self$peeking <- FALSE
-                self$peeked
-            } else {
-                self$next_token()
-            }
-            self$consumed <- self$pos
-            nt
-        },
-        next_token = function() {
-            if (self$pos > self$ntokens) {
-                # The trailing EOF token is sticky: consuming it
-                # (e.g. when it auto-closes a construct) must not run
-                # past the token list, as the caller will peek again
-                self$tokens[[self$ntokens]]
-            } else {
-                nt <- self$tokens[[self$pos]]
-                self$pos <- self$pos + 1
-                nt
-            }
-        },
-        peek = function() {
-            if (!self$peeking) {
-                self$peeked <- self$next_token()
-                self$peeking <- TRUE
-            }
+# A cursor over the tokens of one parse. It is built once per parse()
+# and has reference semantics, like XPathExpr and for the same reason
+# it is a plain environment rather than an R6 object, which costs tens
+# of microseconds more to construct. The methods are closures over
+# this call's frame, so they reach the stream as 'self' and are called
+# as stream$peek() etc.
+TokenStream <- function(tokens) {
+    self <- new.env(parent = emptyenv())
+    self$pos <- 1L
+    self$tokens <- tokens
+    self$ntokens <- length(tokens)
+    # Index of the token most recently returned by nxt(). Positions
+    # are consumed in order, so this doubles as a count of consumed
+    # tokens: parse_simple_selector() only compares it against an
+    # earlier reading to ask whether anything was consumed in
+    # between. The sticky EOF token (see next_token()) leaves pos --
+    # and so this -- alone once it has been consumed the first time.
+    self$consumed <- 0L
+    self$peeked <- NULL
+    self$peeking <- FALSE
+    self$nxt <- function() {
+        nt <- if (self$peeking) {
+            self$peeking <- FALSE
             self$peeked
-        },
-        next_ident = function() {
-            nt <- self$nxt()
-            if (nt$type != "IDENT")
-                parse_stop("Expected ident, got ", token_repr(nt), pos = nt$pos)
-            nt$value
-        },
-        next_ident_or_star = function() {
-            nt <- self$nxt()
-            if (nt$type == "IDENT")
-                nt$value
-            else if (token_equality(nt, "DELIM", "*"))
-                NULL
-            else
-                parse_stop("Expected ident or '*', got ", token_repr(nt), pos = nt$pos)
-        },
-        skip_whitespace = function() {
-            peek <- self$peek()
-            if (peek$type == "S")
-                self$nxt()
+        } else {
+            self$next_token()
         }
-    )
-)
+        self$consumed <- self$pos
+        nt
+    }
+    self$next_token <- function() {
+        if (self$pos > self$ntokens) {
+            # The trailing EOF token is sticky: consuming it
+            # (e.g. when it auto-closes a construct) must not run
+            # past the token list, as the caller will peek again
+            self$tokens[[self$ntokens]]
+        } else {
+            nt <- self$tokens[[self$pos]]
+            self$pos <- self$pos + 1L
+            nt
+        }
+    }
+    self$peek <- function() {
+        if (!self$peeking) {
+            self$peeked <- self$next_token()
+            self$peeking <- TRUE
+        }
+        self$peeked
+    }
+    self$next_ident <- function() {
+        nt <- self$nxt()
+        if (nt$type != "IDENT")
+            parse_stop("Expected ident, got ", token_repr(nt), pos = nt$pos)
+        nt$value
+    }
+    self$next_ident_or_star <- function() {
+        nt <- self$nxt()
+        if (nt$type == "IDENT")
+            nt$value
+        else if (token_equality(nt, "DELIM", "*"))
+            NULL
+        else
+            parse_stop("Expected ident or '*', got ", token_repr(nt), pos = nt$pos)
+    }
+    self$skip_whitespace <- function() {
+        if (self$peek()$type == "S")
+            self$nxt()
+    }
+    self
+}

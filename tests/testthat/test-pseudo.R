@@ -10,13 +10,15 @@ test_that("parser parses canonical pseudo element expressions", {
                                        function(x) {
                                            el <- x
                                            pseudo <- x$pseudo_element
-                                           el$pseudo_element <- NULL
-                                           list(el$repr(), pseudo)
+                                           # keep the field, as NULL, rather
+                                           # than dropping it from the node
+                                           el["pseudo_element"] <- list(NULL)
+                                           list(repr(el), pseudo)
                                        })
             } else {
                 pseudo <- selector$pseudo_element
-                selector$pseudo_element <- NULL
-                results[[i]] <- list(list(selector$repr(), pseudo))
+                selector["pseudo_element"] <- list(NULL)
+                results[[i]] <- list(list(repr(selector), pseudo))
             }
         }
         if (n)
@@ -630,9 +632,9 @@ test_that("pseudo-class names spelled with underscores are unknown", {
 
     # The hyphenated spellings are unaffected
     expect_equal(css_to_xpath("a:first-child"),
-                 "descendant-or-self::a[count(preceding-sibling::*) = 0]")
+                 "descendant-or-self::a[not(preceding-sibling::*[1])]")
     expect_equal(css_to_xpath("a:nth-child(2)"),
-                 "descendant-or-self::a[count(preceding-sibling::*) = 1]")
+                 "descendant-or-self::a[preceding-sibling::*[1] and not(preceding-sibling::*[2])]")
     expect_equal(css_to_xpath(":any-link", translator = "html"),
                  css_to_xpath(":link", translator = "html"))
 })

@@ -2,6 +2,72 @@
 \title{NEWS file for the selectr package}
 \encoding{UTF-8}
 
+\section{Changes in version 0.8-0}{
+  \subsection{MINOR CHANGES}{
+    \itemize{
+
+      \item Structural pseudo-classes such as \code{:first-child},
+      \code{:last-of-type} and \code{:nth-child(-n+5)} now translate to
+      XPath that tests for a sibling at a given position, e.g.
+      \code{not(preceding-sibling::*[1])}, instead of counting them all
+      with \code{count(preceding-sibling::*) = 0}. The two forms match
+      the same elements, but the new one lets the XPath engine stop
+      early. With \pkg{libxml2} (used by \pkg{XML} and \pkg{xml2}),
+      selecting from a list with thousands of siblings takes
+      milliseconds rather than seconds. Only the \code{an} part of
+      \code{:nth-child(an+b)} with \code{a} other than 1 or -1, and an
+      exact position together with an \code{of S} argument, still
+      count siblings. Code that compares the generated XPath text will
+      need updating.
+
+      \item With an \code{of S} argument, \code{:nth-child()} and
+      \code{:nth-last-child()} now test whether the element itself
+      matches \code{S} before counting its siblings, so elements that
+      do not match are rejected without the count. When most elements
+      fail \code{S}, selection is several times faster. The XPath for
+      \code{:nth-child(an+b)} also no longer includes a lower bound
+      that its \code{mod} test already implies, e.g. for \code{3n+2}.
+      Nested \code{of S} arguments using such a formula now produce
+      much shorter XPath. Both changes alter the generated XPath text
+      but not which elements match.
+
+      \item \pkg{selectr} no longer depends on \pkg{R6}, or on any
+      package other than base \R. The translators are now built by a
+      small internal class helper; the generated XPath is unchanged.
+
+      \item Translating a selector is about four times faster.
+      \code{css_to_xpath()} takes a quarter of the time it used to,
+      and so do \code{querySelector()} and its relatives on small
+      documents, where translation is most of the work. On large
+      documents, where most of the time goes to evaluating the XPath,
+      they save about a millisecond per call. Parsing is about seven
+      times faster, and simple selectors like \code{"#main"} or
+      \code{"p.note"} parse 10 to 15 times faster. Parse-tree nodes,
+      the token stream and intermediate XPath expressions are now
+      lightweight S3 objects and plain environments instead of R6
+      objects. Tokenizing takes a single regular-expression pass. The
+      generated XPath is unchanged.
+
+      \item Tokenizing a long selector that contains any non-ASCII
+      character now takes time proportional to its length, as it
+      already did for a pure-ASCII one.
+
+    }
+  }
+  \subsection{BUG FIXES}{
+    \itemize{
+
+      \item A comment's opening \code{*} no longer also closes it:
+      \code{"/*/"} opens a comment that runs to the next \code{*/}, or
+      to the end of the selector, as CSS specifies. It used to be read
+      as a complete comment, so \code{"a/*/ b"} selected \code{b}
+      elements inside \code{a} elements; it now selects \code{a}
+      elements, the rest being an unterminated comment.
+
+    }
+  }
+}
+
 \section{Changes in version 0.7-0}{
   \subsection{NEW FEATURES}{
     \itemize{

@@ -6,9 +6,9 @@ test_that("parser parses canonical test expressions", {
         for (i in seq_len(n)) {
             selector <- selectors[[i]]
             if (is.list(selector)) {
-                results[[i]] <- unlist(lapply(selector, function(x) x$repr()))
+                results[[i]] <- unlist(lapply(selector, repr))
             } else {
-                results[[i]] <- selector$repr()
+                results[[i]] <- repr(selector)
             }
         }
         if (n)
@@ -181,7 +181,7 @@ test_that("parser parses canonical test expressions", {
 })
 
 test_that("parsed elements print correctly", {
-    shw <- function(x) trimws(capture.output(parse(x)[[1]]$show()))
+    shw <- function(x) trimws(capture.output(print(parse(x)[[1]])))
 
     expect_equal(shw("a"), "Element[a]")
     expect_equal(shw(".test"), "Class[Element[*].test]")
@@ -198,27 +198,13 @@ test_that("parsed elements print correctly", {
     expect_equal(shw("#id"), "Hash[Element[*]#id]")
 })
 
-test_that("compiled regex parsing functions behave as expected", {
-    m_whitespace <- compile_('^[ \t\r\n\f]+')
-    m_number <- compile_('^[+-]?(?:[0-9]*\\.[0-9]+|[0-9]+)')
-    m_hash <- compile_(paste0("^#([_a-zA-Z0-9-]|", nonascii, "|\\\\(?:", delim_escapes, "))+"))
-    m_ident <- compile_(paste0("^([_a-zA-Z0-9-]|", nonascii, "|\\\\(?:", delim_escapes, "))+"))
-
-    expect_equal(m_whitespace("a b"), match_whitespace("a b"))
-    expect_equal(m_whitespace(" a b"), match_whitespace(" a b"))
-    expect_equal(m_number("a 1"), match_number("a 1"))
-    expect_equal(m_number("1 a"), match_number("1 a"))
-    expect_equal(m_hash("a #test"), match_hash("a #test"))
-    expect_equal(m_ident(" test"), match_ident(" test"))
-})
-
 test_that("fast-path parses agree with the full parser", {
     full_parse <- function(css) {
-        stream <- TokenStream$new(tokenize(css))
+        stream <- TokenStream(tokenize(css))
         parse_selector_group(stream)
     }
     reprs <- function(selectors) {
-        unlist(lapply(selectors, function(s) s$repr()))
+        unlist(lapply(selectors, repr))
     }
 
     selectors <- c(

@@ -29,10 +29,10 @@ test_that(":nth-child(n of S) with multiple selectors parses correctly", {
     expect_equal(length(fn_obj$selector_list), 2)
 })
 
-test_that("Function$repr() includes the 'of S' selector list", {
-    expect_equal(selectr:::parse(":nth-child(2 of .a)")[[1]]$repr(),
+test_that("Function repr() includes the 'of S' selector list", {
+    expect_equal(selectr:::repr(selectr:::parse(":nth-child(2 of .a)")[[1]]),
                  "Function[Element[*]:nth-child(['2'] of Class[Element[*].a])]")
-    expect_equal(selectr:::parse(":nth-child(2 of .a, .b)")[[1]]$repr(),
+    expect_equal(selectr:::repr(selectr:::parse(":nth-child(2 of .a, .b)")[[1]]),
                  paste0("Function[Element[*]:nth-child(['2'] of ",
                        "Class[Element[*].a], Class[Element[*].b])]"))
 })
@@ -90,9 +90,9 @@ test_that("Regular :nth-child without 'of' still works", {
     expect_false(grepl("@class", xpath1))
     expect_false(grepl("@class", xpath2))
 
-    # Should have simple counting
-    expect_true(grepl("count\\(preceding-sibling::\\*\\)", xpath1))
-    expect_true(grepl("count\\(following-sibling::\\*\\)", xpath2))
+    # Should test plain siblings
+    expect_true(grepl("preceding-sibling::*[1]", xpath1, fixed = TRUE))
+    expect_true(grepl("following-sibling::*[2]", xpath2, fixed = TRUE))
 })
 
 test_that(":nth-child(odd of S) works", {
@@ -123,4 +123,60 @@ test_that(":nth-child with complex selector works", {
 
     # Should check class
     expect_true(grepl("foo", xpath))
+})
+
+test_that("sibling tests are positional, except an exact position with 'of S'", {
+    # the [1] must stay: libxml2 is pathologically slow on a bare
+    # not(preceding-sibling::*)
+    expect_equal(css_to_xpath("li:first-child", prefix = ""),
+                 "li[not(preceding-sibling::*[1])]")
+    expect_equal(css_to_xpath("li:nth-child(-n+2 of b)", prefix = ""),
+                 "li[self::b and not(preceding-sibling::*[self::b][2])]")
+    expect_equal(css_to_xpath("li:nth-last-child(n+3 of b)", prefix = ""),
+                 "li[self::b and following-sibling::*[self::b][2]]")
+    # writing S once rather than twice keeps nested 'of S' arguments
+    # from growing faster than they already do
+    expect_equal(css_to_xpath("li:nth-child(3 of b)", prefix = ""),
+                 "li[self::b and count(preceding-sibling::*[self::b]) = 2]")
+})
+
+test_that("An+B omits a bound the mod test implies, and tests S first", {
+    # 0 < B-1 < A: every count passing the mod test is already >= B-1
+    expect_equal(css_to_xpath("li:nth-child(3n+2)", prefix = ""),
+                 "li[(count(preceding-sibling::*) + 2) mod 3 = 0]")
+    expect_equal(css_to_xpath("li:nth-child(10n+10)", prefix = ""),
+                 "li[(count(preceding-sibling::*) + 1) mod 10 = 0]")
+    # B-1 >= A: the residue class holds counts below B-1, so the bound stays
+    expect_equal(css_to_xpath("li:nth-child(2n+3)", prefix = ""),
+                 paste0("li[preceding-sibling::*[2] and ",
+                        "count(preceding-sibling::*) mod 2 = 0]"))
+    expect_equal(css_to_xpath("li:nth-child(3n+4)", prefix = ""),
+                 paste0("li[preceding-sibling::*[3] and ",
+                        "count(preceding-sibling::*) mod 3 = 0]"))
+    # with A = 1 there is no mod test to imply it
+    expect_equal(css_to_xpath("li:nth-child(n+2)", prefix = ""),
+                 "li[preceding-sibling::*[1]]")
+
+    # the element's own S test comes before the sibling walk, so an
+    # element failing S is rejected without counting
+    expect_equal(css_to_xpath("li:nth-child(3n+2 of b)", prefix = ""),
+                 paste0("li[self::b and (count(preceding-sibling::*",
+                        "[self::b]) + 2) mod 3 = 0]"))
+    # conditions the author wrote keep their source order
+    expect_equal(css_to_xpath("li:nth-child(3).x", prefix = ""),
+                 paste0("li[preceding-sibling::*[2] and not(preceding-sibling",
+                        "::*[3]) and contains(concat(' ', normalize-space(",
+                        "@class), ' '), ' x ')]"))
+    expect_equal(css_to_xpath("li:nth-child(2 of b).x", prefix = ""),
+                 paste0("li[self::b and count(preceding-sibling::*[self::b])",
+                        " = 1 and contains(concat(' ', normalize-space(",
+                        "@class), ' '), ' x ')]"))
+
+    # without a bound, nested 'of S' arguments write S twice per level
+    nest <- function(series, depth) {
+        s <- ".x"
+        for (i in seq_len(depth)) s <- sprintf(":nth-child(%s of %s)", series, s)
+        nchar(css_to_xpath(s, prefix = ""))
+    }
+    expect_lt(nest("3n+2", 6) / nest("3n+2", 5), 2.1)
 })

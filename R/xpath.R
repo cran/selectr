@@ -1,197 +1,206 @@
-XPathExpr <- R6Class("XPathExpr",
-    public = list(
-        path = "",
-        element = "*",
-        # Sequential predicates rendered as [p1][p2]... between the
-        # element and the condition. Unlike conditions (which are
-        # AND-ed together into a single predicate), the order of
-        # predicates is significant: a positional predicate such as [1]
-        # filters the node set produced by the predicates before it
-        predicates = character(0),
-        # The conjuncts of the predicate, AND-joined by the 'condition'
-        # binding below. Held apart rather than accumulated into one
-        # string so that a conjunct already asked for can be recognised
-        # and dropped: a compound may name the same simple selector
-        # twice ('div.scene.scene'), which hand-written CSS rarely does
-        # but generated CSS does routinely
-        conditions = character(0),
-        # Whether 'condition' is a top-level or-expression stored
-        # alone (unparenthesized); it must be wrapped if another
-        # condition is ever AND-joined to it
-        condition_is_or = FALSE,
-        # The local part of the element name the compound pins, when
-        # that name is not carried by 'element' itself: '*|e' matches
-        # any namespace, so its name lives in a local-name() condition
-        # (see xpath_element()) rather than in a node test
-        local_name = NULL,
-        star_prefix = FALSE,
-        # When an explicit element name cannot be used as an XPath name
-        # test (and so 'element' has been folded into a condition on
-        # '*'), an equivalent node test for that name; NULL otherwise.
-        # Lets the of-type pseudo-classes distinguish such elements from
-        # the universal selector and count their siblings correctly.
-        name_test = NULL,
-        # Whether the leftmost compound of the selector contained
-        # ':scope', anchoring the expression at the query's scoping
-        # root: selector_to_xpath() then emits the self axis instead of
-        # the usual prefix. join() keeps the flag of its left operand,
-        # so it survives to the full complex selector; a ':scope' that
-        # is not leftmost is rejected when the flagged expression turns
-        # up as the right side of a combinator (or inside a
-        # pseudo-class argument)
-        scoped = FALSE,
-        # Where that ':scope' sits in the selector text, so that the
-        # rejection can point at it. Set by xpath_pseudo() rather than
-        # by xpath_scope_pseudo(), which is handed the expression alone
-        scope_pos = NULL,
-        initialize = function(path = "", element = "*", star_prefix = FALSE) {
-            self$path <- path
-            self$element <- element
-            self$star_prefix <- star_prefix
-        },
-        str = function() {
-            p <- paste0(self$path, self$element)
-            if (length(self$predicates))
-                p <- paste0(p,
-                            paste0("[", self$predicates, "]", collapse = ""))
-            if (nzchar(self$condition))
-                p <- paste0(p, "[", self$condition, "]")
-            p
-        },
-        repr = function() {
-            paste0(first_class_name(self), "[", self$str(), "]")
-        },
-        add_condition = function(condition, is_or_group = FALSE) {
-            # Always AND with the existing condition: an "or" (or a union,
-            # see below) appended here would flatten into the accumulated
-            # condition chain, changing its meaning. Callers wanting
-            # alternatives must OR- or union-join them and add the result
-            # as one condition, flagged with 'is_or_group'.
-            #
-            # Parenthesize only when needed. 'is_or_group' covers any
-            # expression that a reader would need XPath's precedence rules
-            # to see as a single unit once it sits beside an "and": an
-            # "or", the only operator that binds more loosely than "and",
-            # needs no parentheses while alone in the bracketed predicate;
-            # a union ('|') binds tighter than "and" and so is already
-            # correct unparenthesized, but is flagged the same way purely
-            # for readability (xpath_has()). Defer them to the moment the
-            # group is joined with another condition, on whichever side it
-            # sits; the joined result is an and-chain, no longer a group.
-            #
-            # "0" - the condition a never-matching simple selector adds
-            # (an empty ':is()', an impossible :nth-child(), a
-            # substring match on the empty string, ...) - absorbs
-            # everything AND-ed with it, in either order: once one
-            # conjunct is constant-false the whole predicate is, so the
-            # rest is noise to anyone reading the expression. Folding
-            # here rather than at each call site catches the compound
-            # whichever way round it was written, giving 'e.warning:is()'
-            # the plain "e[0]" instead of a class test AND-ed with 0.
-            if (identical(condition, "0")) {
-                self$conditions <- "0"
-                self$condition_is_or <- FALSE
-                return(invisible(NULL))
-            }
-            if (identical(self$conditions, "0"))
-                return(invisible(NULL))
-            if (length(self$conditions)) {
-                grouped <- if (is_or_group)
-                    paste0("(", condition, ")")
-                else
-                    condition
-                # An exactly repeated conjunct asks a question already
-                # asked, and AND-ing an expression with itself changes
-                # nothing, so keep the first and drop the repeat. Doing
-                # so before either side is parenthesized leaves the
-                # first copy exactly as it was written, so that
-                # 'e:checked:checked' reads like 'e:checked' rather
-                # than gaining brackets around a group nothing was
-                # joined to. Both spellings are compared because the
-                # stored copy may already have been grouped by an
-                # earlier join.
-                if (any(self$conditions == condition) ||
-                    any(self$conditions == grouped))
-                    return(invisible(NULL))
-                if (self$condition_is_or) {
-                    self$conditions <- paste0("(", self$conditions, ")")
-                    self$condition_is_or <- FALSE
-                }
-                self$conditions <- c(self$conditions, grouped)
-            } else {
-                self$conditions <- condition
-                self$condition_is_or <- is_or_group
-            }
-        },
-        add_predicate = function(predicate) {
-            self$predicates <- c(self$predicates, predicate)
-        },
-        # Match an element name that cannot be written as an XPath
-        # name test (e.g. one starting with a digit, or one containing
-        # an escaped colon) by comparing it against name() instead -
-        # and name() returns the *qualified* name, which for an element
-        # in a default namespace is the bare local name. Pin
-        # namespace-uri() alongside it so a quoted name matches exactly
-        # what a name test would have: the name in no namespace. Only
-        # unprefixed names are ever quoted this way (xpath_element()
-        # keeps a prefix in the node test), so the pin is always the
-        # right one.
-        add_quoted_name_test = function(name) {
-            condition <- paste0("name() = ", xpath_literal(name))
-            self$add_condition(condition)
-            self$add_condition("namespace-uri() = ''")
-            self$name_test <- paste0("*[", condition,
-                                     " and namespace-uri() = '']")
-        },
-        add_name_test = function(as_predicate = FALSE) {
-            if (self$element == "*")
-                return()
-            if (is_safe_nodetest(self$element)) {
-                # A name that can be written as an XPath name test is
-                # matched on the self axis, giving it exactly the
-                # semantics of the bare name test in a path step: an
-                # unprefixed name matches the null namespace only, and
-                # a prefix resolves through the namespace map supplied
-                # at evaluation time. Comparing name() instead would
-                # make the same name mean different things depending on
-                # where it sits in the selector - matching a *default*
-                # namespace too, so that ':is(p)' selected elements a
-                # top-level 'p' does not, and testing a prefixed name
-                # against the document's literal prefix, not its URI.
-                test <- paste0("self::", self$element)
-                if (as_predicate)
-                    self$add_predicate(test)
-                else
-                    self$add_condition(test)
-                self$name_test <- self$element
-            } else {
-                self$add_quoted_name_test(self$element)
-            }
-            self$element <- "*"
-        },
-        join = function(combiner, other) {
-            self$path <- paste0(self$str(), combiner, other$path)
-            self$element <- other$element
-            self$predicates <- other$predicates
-            self$conditions <- other$conditions
-            self$condition_is_or <- other$condition_is_or
-            self$name_test <- other$name_test
-            self$local_name <- other$local_name
-            self
-        },
-        show = function() { # nocov start
-            cat(self$repr(), "\n")
-        } # nocov end
-    ),
-    active = list(
-        # The accumulated conjuncts as the single expression that goes
-        # into the predicate, and "" when there are none. Read-only:
-        # conditions are added through add_condition(), which is where
-        # the parenthesizing and the folding live
-        condition = function() {
-            paste(self$conditions, collapse = " and ")
+# A (possibly partial) XPath expression, accumulated in place by the
+# translator as it walks a compound selector. The translator relies on
+# reference semantics - a handler adds conditions to the expression it
+# is handed - so this is an environment, but a plain one built here
+# rather than a translator_class() object, which costs more to
+# construct and is built once per compound selector. The methods are
+# closures over this call's frame, so they reach the expression as
+# 'self' and are called as xpath$add_condition() etc., the same as when
+# this was an R6 class.
+XPathExpr <- function(path = "", element = "*", star_prefix = FALSE) {
+    self <- new.env(parent = emptyenv())
+    self$path <- path
+    self$element <- element
+    # Sequential predicates rendered as [p1][p2]... between the
+    # element and the condition. Unlike conditions (which are
+    # AND-ed together into a single predicate), the order of
+    # predicates is significant: a positional predicate such as [1]
+    # filters the node set produced by the predicates before it
+    self$predicates <- character(0)
+    # The conjuncts of the predicate, AND-joined by the 'condition'
+    # binding below. Held apart rather than accumulated into one
+    # string so that a conjunct already asked for can be recognised
+    # and dropped: a compound may name the same simple selector
+    # twice ('div.scene.scene'), which hand-written CSS rarely does
+    # but generated CSS does routinely
+    self$conditions <- character(0)
+    # Whether 'condition' is a top-level or-expression stored
+    # alone (unparenthesized); it must be wrapped if another
+    # condition is ever AND-joined to it
+    self$condition_is_or <- FALSE
+    # The local part of the element name the compound pins, when
+    # that name is not carried by 'element' itself: '*|e' matches
+    # any namespace, so its name lives in a local-name() condition
+    # (see xpath_element()) rather than in a node test
+    self$local_name <- NULL
+    self$star_prefix <- star_prefix
+    # When an explicit element name cannot be used as an XPath name
+    # test (and so 'element' has been folded into a condition on
+    # '*'), an equivalent node test for that name; NULL otherwise.
+    # Lets the of-type pseudo-classes distinguish such elements from
+    # the universal selector and count their siblings correctly.
+    self$name_test <- NULL
+    # Whether the leftmost compound of the selector contained
+    # ':scope', anchoring the expression at the query's scoping
+    # root: selector_to_xpath() then emits the self axis instead of
+    # the usual prefix. join() keeps the flag of its left operand,
+    # so it survives to the full complex selector; a ':scope' that
+    # is not leftmost is rejected when the flagged expression turns
+    # up as the right side of a combinator (or inside a
+    # pseudo-class argument)
+    self$scoped <- FALSE
+    # Where that ':scope' sits in the selector text, so that the
+    # rejection can point at it. Set by xpath_pseudo() rather than
+    # by xpath_scope_pseudo(), which is handed the expression alone
+    self$scope_pos <- NULL
+    self$str <- function() {
+        p <- paste0(self$path, self$element)
+        if (length(self$predicates))
+            p <- paste0(p,
+                        paste0("[", self$predicates, "]", collapse = ""))
+        if (nzchar(self$condition))
+            p <- paste0(p, "[", self$condition, "]")
+        p
+    }
+    self$repr <- function() {
+        paste0(first_class_name(self), "[", self$str(), "]")
+    }
+    self$add_condition <- function(condition, is_or_group = FALSE) {
+        # Always AND with the existing condition: an "or" (or a union,
+        # see below) appended here would flatten into the accumulated
+        # condition chain, changing its meaning. Callers wanting
+        # alternatives must OR- or union-join them and add the result
+        # as one condition, flagged with 'is_or_group'.
+        #
+        # Parenthesize only when needed. 'is_or_group' covers any
+        # expression that a reader would need XPath's precedence rules
+        # to see as a single unit once it sits beside an "and": an
+        # "or", the only operator that binds more loosely than "and",
+        # needs no parentheses while alone in the bracketed predicate;
+        # a union ('|') binds tighter than "and" and so is already
+        # correct unparenthesized, but is flagged the same way purely
+        # for readability (xpath_has()). Defer them to the moment the
+        # group is joined with another condition, on whichever side it
+        # sits; the joined result is an and-chain, no longer a group.
+        #
+        # "0" - the condition a never-matching simple selector adds
+        # (an empty ':is()', an impossible :nth-child(), a
+        # substring match on the empty string, ...) - absorbs
+        # everything AND-ed with it, in either order: once one
+        # conjunct is constant-false the whole predicate is, so the
+        # rest is noise to anyone reading the expression. Folding
+        # here rather than at each call site catches the compound
+        # whichever way round it was written, giving 'e.warning:is()'
+        # the plain "e[0]" instead of a class test AND-ed with 0.
+        if (identical(condition, "0")) {
+            self$conditions <- "0"
+            self$condition_is_or <- FALSE
+            return(invisible(NULL))
         }
-    ))
+        if (identical(self$conditions, "0"))
+            return(invisible(NULL))
+        if (length(self$conditions)) {
+            grouped <- if (is_or_group)
+                paste0("(", condition, ")")
+            else
+                condition
+            # An exactly repeated conjunct asks a question already
+            # asked, and AND-ing an expression with itself changes
+            # nothing, so keep the first and drop the repeat. Doing
+            # so before either side is parenthesized leaves the
+            # first copy exactly as it was written, so that
+            # 'e:checked:checked' reads like 'e:checked' rather
+            # than gaining brackets around a group nothing was
+            # joined to. Both spellings are compared because the
+            # stored copy may already have been grouped by an
+            # earlier join.
+            if (any(self$conditions == condition) ||
+                any(self$conditions == grouped))
+                return(invisible(NULL))
+            if (self$condition_is_or) {
+                self$conditions <- paste0("(", self$conditions, ")")
+                self$condition_is_or <- FALSE
+            }
+            self$conditions <- c(self$conditions, grouped)
+        } else {
+            self$conditions <- condition
+            self$condition_is_or <- is_or_group
+        }
+    }
+    self$add_predicate <- function(predicate) {
+        self$predicates <- c(self$predicates, predicate)
+    }
+    # Match an element name that cannot be written as an XPath
+    # name test (e.g. one starting with a digit, or one containing
+    # an escaped colon) by comparing it against name() instead -
+    # and name() returns the *qualified* name, which for an element
+    # in a default namespace is the bare local name. Pin
+    # namespace-uri() alongside it so a quoted name matches exactly
+    # what a name test would have: the name in no namespace. Only
+    # unprefixed names are ever quoted this way (xpath_element()
+    # keeps a prefix in the node test), so the pin is always the
+    # right one.
+    self$add_quoted_name_test <- function(name) {
+        condition <- paste0("name() = ", xpath_literal(name))
+        self$add_condition(condition)
+        self$add_condition("namespace-uri() = ''")
+        self$name_test <- paste0("*[", condition,
+                                 " and namespace-uri() = '']")
+    }
+    self$add_name_test <- function(as_predicate = FALSE) {
+        if (self$element == "*")
+            return()
+        if (is_safe_nodetest(self$element)) {
+            # A name that can be written as an XPath name test is
+            # matched on the self axis, giving it exactly the
+            # semantics of the bare name test in a path step: an
+            # unprefixed name matches the null namespace only, and
+            # a prefix resolves through the namespace map supplied
+            # at evaluation time. Comparing name() instead would
+            # make the same name mean different things depending on
+            # where it sits in the selector - matching a *default*
+            # namespace too, so that ':is(p)' selected elements a
+            # top-level 'p' does not, and testing a prefixed name
+            # against the document's literal prefix, not its URI.
+            test <- paste0("self::", self$element)
+            if (as_predicate)
+                self$add_predicate(test)
+            else
+                self$add_condition(test)
+            self$name_test <- self$element
+        } else {
+            self$add_quoted_name_test(self$element)
+        }
+        self$element <- "*"
+    }
+    self$join <- function(combiner, other) {
+        self$path <- paste0(self$str(), combiner, other$path)
+        self$element <- other$element
+        self$predicates <- other$predicates
+        self$conditions <- other$conditions
+        self$condition_is_or <- other$condition_is_or
+        self$name_test <- other$name_test
+        self$local_name <- other$local_name
+        self
+    }
+    self$show <- function() { # nocov start
+        cat(self$repr(), "\n")
+    } # nocov end
+    # The accumulated conjuncts as the single expression that goes
+    # into the predicate, and "" when there are none. Read-only:
+    # conditions are added through add_condition(), which is where
+    # the parenthesizing and the folding live
+    makeActiveBinding("condition", function() {
+        paste(self$conditions, collapse = " and ")
+    }, self)
+    class(self) <- "XPathExpr"
+    self
+}
+
+print.XPathExpr <- function(x, ...) { # nocov start
+    x$show()
+    invisible(x)
+} # nocov end
 
 ascii_upper_letters <- "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 ascii_lower_letters <- "abcdefghijklmnopqrstuvwxyz"
@@ -211,7 +220,12 @@ ascii_lower_letters <- "abcdefghijklmnopqrstuvwxyz"
 # unclassed "invalid input ... in 'utf8towcs'", instead of translating
 # like any other name XPath cannot spell. gsub() takes the string as it
 # stands.
+#
+# Most input is already lowercase, so the substitution is only run when
+# there is a letter to fold.
 ascii_lower <- function(x) {
+    if (!any(grepl("[A-Z]", x, useBytes = TRUE)))
+        return(x)
     gsub("([A-Z])", "\\L\\1", x, perl = TRUE)
 }
 
@@ -281,6 +295,49 @@ of_type_nodetest_or_stop <- function(xpath, name) {
         translation_stop(paste0("*:", name, " is not implemented"),
                          paste0("*:", name))
     nodetest
+}
+
+# A test on the number of siblings along 'axis' ("preceding-sibling"
+# or "following-sibling") that match 'nodetest' and then 'predicate'
+# (the "[S]" of an 'of S' argument, or ""). 'op' is "=", ">=" or "<=",
+# and 'k' is a non-negative whole number; ">=" needs k > 0, since a
+# count is always >= 0.
+#
+# The test is written with positional predicates rather than
+# count(): count() walks the whole axis, so each element costs
+# O(siblings), and selecting among n siblings costs O(n^2). A
+# positional predicate lets the engine stop at the k-th node. On a
+# reverse axis [k] counts back from the context node, so axis[k] is
+# non-empty exactly when there are at least k matching siblings:
+#
+#   count = 0        not(axis[1])
+#   count = k (k>0)  axis[k] and not(axis[k+1])
+#   count >= k       axis[k]
+#   count <= k       not(axis[k+1])
+#
+# The [1] must stay: libxml2 takes a pathological path for a bare
+# not(preceding-sibling::*), minutes rather than milliseconds on a few
+# thousand siblings.
+#
+# "= k" for k > 0 writes the axis twice. With a 'predicate' that would
+# also write S twice, and since S may itself hold an nth-child 'of S',
+# nested arguments would grow the output 3x per level rather than 2x,
+# so that one case keeps the count() form. (A bound that the "mod a"
+# test does not already imply, as in :nth-child(2n+3 of S), still
+# writes S twice beside that test, so such nesting can triple.)
+sibling_count_test <- function(axis, nodetest, predicate, op, k) {
+    step <- paste0(axis, "::", nodetest, predicate)
+    if (op == "=" && k > 0 && nzchar(predicate))
+        return(paste0("count(", step, ") = ", xpath_number(k)))
+    at_least <- function(n) paste0(step, "[", xpath_number(n), "]")
+    switch(op,
+           "=" = if (k == 0) {
+               paste0("not(", at_least(1), ")")
+           } else {
+               paste0(at_least(k), " and not(", at_least(k + 1), ")")
+           },
+           ">=" = at_least(k),
+           "<=" = paste0("not(", at_least(k + 1), ")"))
 }
 
 # A translation failure: valid CSS that names a feature the current
@@ -437,7 +494,7 @@ lang_range_multi_subtag <- function(value) {
 # A lone '-' lexes as an IDENT but is not a valid <ident> per
 # css-syntax, so reject it too.
 validate_lang_args <- function(fn) {
-    arg_types <- fn$argument_types()
+    arg_types <- vapply(fn$arguments, function(a) a$type, character(1))
     arg_values <- sapply(fn$arguments, function(a) a$value)
     valid_types <- (arg_types %in% c("STRING", "IDENT") |
                   (arg_types == "DELIM" & arg_values == "*")) &
@@ -554,9 +611,28 @@ lang_extended_html_condition <- function(value, xhtml) {
            paste(conditions, collapse = " and "), "]")
 }
 
+# The type name of a parse-tree node (or of an XPathExpr), as repr()
+# prints it. A ClassSelector node reads as "Class"; see ClassSelector().
 first_class_name <- function(obj) {
-    if (!is.null(obj$repr_name)) obj$repr_name else class(obj)[1]
+    cls <- class(obj)[1]
+    if (cls == "ClassSelector") "Class" else cls
 }
+
+# The translator method for each type of parse-tree node, keyed by the
+# node's first class, which the translator's xpath() dispatches on. A
+# type missing here (e.g. RelativeSelector, which only ever appears
+# inside :has() and is translated there) has no method of its own
+xpath_method_names <- c(CombinedSelector = "xpath_combinedselector",
+                        Negation = "xpath_negation",
+                        Matching = "xpath_matching",
+                        Where = "xpath_where",
+                        Has = "xpath_has",
+                        Function = "xpath_function",
+                        Pseudo = "xpath_pseudo",
+                        Attrib = "xpath_attrib",
+                        ClassSelector = "xpath_class",
+                        Hash = "xpath_hash",
+                        Element = "xpath_element")
 
 # The attributes whose *values* an HTML document matches ASCII
 # case-insensitively, from HTML's "Case-sensitivity of selectors". The
@@ -1002,12 +1078,12 @@ checked_disjuncts <- list(
 # adding '[1]' to this picks the *nearest* enclosing form
 form_ancestor <- "ancestor::*[local-name() = 'form']"
 
-GenericTranslator <- R6Class("GenericTranslator",
+GenericTranslator <- translator_class("GenericTranslator",
     public = list(
-        combinator_mapping = c(" " = "descendant",
-                               ">" = "child",
-                               "+" = "direct_adjacent",
-                               "~" = "indirect_adjacent"),
+        combinator_methods = c(" " = "xpath_descendant_combinator",
+                               ">" = "xpath_child_combinator",
+                               "+" = "xpath_direct_adjacent_combinator",
+                               "~" = "xpath_indirect_adjacent_combinator"),
         attribute_operator_mapping = c("exists" = "exists",
                                        "=" = "equals",
                                        "~=" = "includes",
@@ -1080,10 +1156,10 @@ GenericTranslator <- R6Class("GenericTranslator",
             paste0(prefix, xpath$str())
         },
         xpath = function(parsed_selector) {
-            type_name <- first_class_name(parsed_selector)
-            method <- self[[paste0("xpath_", ascii_lower(type_name))]]
+            method <- self[[xpath_method_names[class(parsed_selector)[1]]]]
             if (is.null(method))
-                internal_stop("Unknown method name '", type_name, "'")
+                internal_stop("Unknown method name '",
+                              first_class_name(parsed_selector), "'")
             method(parsed_selector)
         },
         xpath_combinedselector = function(combined) {
@@ -1093,10 +1169,9 @@ GenericTranslator <- R6Class("GenericTranslator",
             spine <- combinator_spine(combined)
             left <- self$xpath(spine$leftmost)
             for (node in spine$nodes) {
-                combinator <- self$combinator_mapping[node$combinator]
-                method <- self[[paste0("xpath_", combinator, "_combinator")]]
+                method <- self[[self$combinator_methods[node$combinator]]]
                 if (is.null(method))
-                    internal_stop("Unknown combinator '", combinator, "'")
+                    internal_stop("Unknown combinator '", node$combinator, "'")
                 right <- self$xpath(node$subselector)
                 if (right$scoped)
                     stop_non_leading_scope(right$scope_pos)
@@ -1330,8 +1405,15 @@ GenericTranslator <- R6Class("GenericTranslator",
         # hyphenated; the method name replaces '-' with '_', so a name
         # containing an underscore is rejected up front, otherwise
         # ':first_child' would alias ':first-child' instead of being
-        # reported as unknown
+        # reported as unknown. A name the package's own translators
+        # implement is found in 'pseudo_method_names' without building
+        # the method name; anything else (including a handler only a
+        # subclass defines) takes the general route
         pseudo_method = function(name, suffix) {
+            methods <- pseudo_method_names[[suffix]]
+            i <- match(name, names(methods))
+            if (!is.na(i))
+                return(self[[methods[[i]]]])
             if (grepl("_", name, fixed = TRUE))
                 return(NULL)
             self[[paste0("xpath_", gsub("-", "_", name), suffix)]]
@@ -1475,11 +1557,10 @@ GenericTranslator <- R6Class("GenericTranslator",
                 # '*|e': 'e' in any namespace, including none.  An
                 # unprefixed XPath name test only matches the null
                 # namespace, so test against local-name() instead.
-                xpath <- XPathExpr$new()
-                xpath$add_condition(paste0("local-name() = ",
-                                           xpath_literal(element)))
-                xpath$name_test <- paste0("*[local-name() = ",
-                                          xpath_literal(element), "]")
+                condition <- paste0("local-name() = ", xpath_literal(element))
+                xpath <- XPathExpr()
+                xpath$add_condition(condition)
+                xpath$name_test <- paste0("*[", condition, "]")
                 xpath$local_name <- element
                 return(xpath)
             }
@@ -1489,7 +1570,7 @@ GenericTranslator <- R6Class("GenericTranslator",
                 # 'e' translation below.  '|*' needs an explicit
                 # namespace-uri() check.
                 if (element == "*") {
-                    xpath <- XPathExpr$new()
+                    xpath <- XPathExpr()
                     xpath$add_condition("namespace-uri() = ''")
                     return(xpath)
                 }
@@ -1508,8 +1589,8 @@ GenericTranslator <- R6Class("GenericTranslator",
                 # prefixed name or the universal selector, neither of
                 # which is the element the selector names.
                 if (safe)
-                    return(XPathExpr$new(element = element))
-                xpath <- XPathExpr$new()
+                    return(XPathExpr(element = element))
+                xpath <- XPathExpr()
                 xpath$add_quoted_name_test(element)
                 return(xpath)
             }
@@ -1539,7 +1620,7 @@ GenericTranslator <- R6Class("GenericTranslator",
                     # the whole node test the compound really means, so
                     # they count siblings by prefix and local name
                     # rather than seeing the universal selector.
-                    xpath <- XPathExpr$new(element = paste0(namespace, ":*"))
+                    xpath <- XPathExpr(element = paste0(namespace, ":*"))
                     condition <- paste0("local-name() = ",
                                         xpath_literal(element))
                     xpath$add_condition(condition)
@@ -1548,7 +1629,7 @@ GenericTranslator <- R6Class("GenericTranslator",
                 }
                 element <- paste0(namespace, ":", element)
             }
-            XPathExpr$new(element = element)
+            XPathExpr(element = element)
         },
         xpath_descendant_combinator = function(left, right) {
             left$join("//", right)
@@ -1677,13 +1758,26 @@ GenericTranslator <- R6Class("GenericTranslator",
                 if (is.null(selector_list_cond)) ""
                 else paste0("[", selector_list_cond$condition, "]")
 
-            # count siblings before or after the element
-            if (!last) {
-                siblings_count <- paste0("count(preceding-sibling::",
-                                         nodetest, selector_predicate, ")")
-            } else {
-                siblings_count <- paste0("count(following-sibling::",
-                                         nodetest, selector_predicate, ")")
+            # count siblings before or after the element. Comparisons
+            # against the count are written positionally by
+            # sibling_count_test(); only the "mod a" term needs count()
+            axis <- if (last) "following-sibling" else "preceding-sibling"
+            siblings_count <- paste0("count(", axis, "::",
+                                     nodetest, selector_predicate, ")")
+            count_test <- function(op, k) {
+                sibling_count_test(axis, nodetest, selector_predicate, op, k)
+            }
+
+            # CSS Level 4: When selector list is provided, ensure current
+            # element matches. This goes before the sibling test: "and"
+            # evaluates left to right and stops at the first false
+            # operand, so an element failing S - usually a cheap test -
+            # never pays for the O(siblings) walk below. Conditions the
+            # author wrote alongside the pseudo-class keep their source
+            # order; only the two this pseudo-class generates are ordered
+            if (!is.null(selector_list_cond)) {
+                xpath$add_condition(selector_list_cond$condition,
+                                    selector_list_cond$is_or)
             }
 
             # special case of fixed position: nth-*(0n+b)
@@ -1691,15 +1785,7 @@ GenericTranslator <- R6Class("GenericTranslator",
             # ~~~~~~~~~~
             #    count(***-sibling::***) = b-1
             if (a == 0) {
-                xpath$add_condition(paste0(siblings_count, " = ",
-                                           xpath_number(b_min_1)))
-
-                # CSS Level 4: When selector list is provided, ensure current element matches
-                if (!is.null(selector_list_cond)) {
-                    xpath$add_condition(selector_list_cond$condition,
-                                        selector_list_cond$is_or)
-                }
-
+                xpath$add_condition(count_test("=", b_min_1))
                 return(xpath)
             }
 
@@ -1708,17 +1794,19 @@ GenericTranslator <- R6Class("GenericTranslator",
             if (a > 0) {
                 # siblings count, an+b-1, is always >= 0,
                 # so if a>0, and (b-1)<=0, an "n" exists to satisfy this,
-                # therefore, the predicate is only interesting if (b-1)>0
-                if (b_min_1 > 0) {
-                    expr <- c(expr, paste0(siblings_count, " >= ",
-                                           xpath_number(b_min_1)))
+                # therefore, the predicate is only interesting if (b-1)>0.
+                # For a>1 the "mod a" test below also holds only for counts
+                # congruent to b-1; when 0 < b-1 < a the smallest such
+                # count is b-1 itself, so that test already implies this
+                # bound and writing it too would walk the siblings twice
+                if (b_min_1 > 0 && (a == 1 || b_min_1 >= a)) {
+                    expr <- c(expr, count_test(">=", b_min_1))
                 }
             } else {
                 # if a<0, and (b-1)<0, no "n" satisfies this,
                 # this is tested above as an early exist condition
                 # otherwise,
-                expr <- c(expr, paste0(siblings_count, " <= ",
-                                       xpath_number(b_min_1)))
+                expr <- c(expr, count_test("<=", b_min_1))
             }
 
             # operations modulo 1 or -1 are simpler, one only needs to verify:
@@ -1752,12 +1840,6 @@ GenericTranslator <- R6Class("GenericTranslator",
             if (length(expr)) {
                 expr <- paste0(expr, collapse = " and ")
                 xpath$add_condition(expr)
-            }
-
-            # CSS Level 4: When selector list is provided, ensure current element matches
-            if (!is.null(selector_list_cond)) {
-                xpath$add_condition(selector_list_cond$condition,
-                                    selector_list_cond$is_or)
             }
 
             xpath
@@ -1872,23 +1954,23 @@ GenericTranslator <- R6Class("GenericTranslator",
             xpath
         },
         xpath_first_child_pseudo = function(xpath) {
-            xpath$add_condition("count(preceding-sibling::*) = 0")
+            xpath$add_condition("not(preceding-sibling::*[1])")
             xpath
         },
         xpath_last_child_pseudo = function(xpath) {
-            xpath$add_condition("count(following-sibling::*) = 0")
+            xpath$add_condition("not(following-sibling::*[1])")
             xpath
         },
         xpath_first_of_type_pseudo = function(xpath) {
             nodetest <- of_type_nodetest_or_stop(xpath, "first-of-type")
             xpath$add_condition(paste0(
-                "count(preceding-sibling::", nodetest, ") = 0"))
+                "not(preceding-sibling::", nodetest, "[1])"))
             xpath
         },
         xpath_last_of_type_pseudo = function(xpath) {
             nodetest <- of_type_nodetest_or_stop(xpath, "last-of-type")
             xpath$add_condition(paste0(
-                "count(following-sibling::", nodetest, ") = 0"))
+                "not(following-sibling::", nodetest, "[1])"))
             xpath
         },
         xpath_only_child_pseudo = function(xpath) {
@@ -1897,15 +1979,15 @@ GenericTranslator <- R6Class("GenericTranslator",
             # would make the count 0 and the root never match, while the
             # equivalent :first-child:last-child does match it.
             xpath$add_condition(paste(
-                "count(preceding-sibling::*) = 0 and",
-                "count(following-sibling::*) = 0"))
+                "not(preceding-sibling::*[1]) and",
+                "not(following-sibling::*[1])"))
             xpath
         },
         xpath_only_of_type_pseudo = function(xpath) {
             nodetest <- of_type_nodetest_or_stop(xpath, "only-of-type")
             xpath$add_condition(paste0(
-                "count(preceding-sibling::", nodetest, ") = 0 and ",
-                "count(following-sibling::", nodetest, ") = 0"))
+                "not(preceding-sibling::", nodetest, "[1]) and ",
+                "not(following-sibling::", nodetest, "[1])"))
             xpath
         },
         xpath_empty_pseudo = function(xpath) {
@@ -2044,7 +2126,7 @@ GenericTranslator <- R6Class("GenericTranslator",
     )
 )
 
-HTMLTranslator <- R6Class("HTMLTranslator",
+HTMLTranslator <- translator_class("HTMLTranslator",
     inherit = GenericTranslator,
     public = list(
         xhtml = FALSE,
@@ -2308,3 +2390,23 @@ HTMLTranslator <- R6Class("HTMLTranslator",
         }
     )
 )
+
+# The pseudo-class methods of the package's translators, as one table
+# per method suffix ("_pseudo" for a plain pseudo-class, "_function"
+# for a functional one) mapping each hyphenated CSS name to its method
+# name. This is only a shortcut for pseudo_method(), which still reads
+# the method from the translator (so a subclass's override is used) and
+# falls back to building the name for one the table lacks.
+pseudo_method_names <- local({
+    methods <- unique(c(names(GenericTranslator$public_methods),
+                        names(HTMLTranslator$public_methods)))
+    table_for <- function(suffix) {
+        pattern <- paste0("^xpath_(.+)", suffix, "$")
+        found <- grep(pattern, methods, value = TRUE)
+        names(found) <- gsub("_", "-", sub(pattern, "\\1", found),
+                             fixed = TRUE)
+        found
+    }
+    list(`_pseudo` = table_for("_pseudo"),
+         `_function` = table_for("_function"))
+})

@@ -1,19 +1,19 @@
 test_that("XPathExpr objects print correctly", {
     shw <- function(x) trimws(capture.output(x$show()))
 
-    xp <- XPathExpr$new()
+    xp <- XPathExpr()
     expect_equal(xp$repr(), "XPathExpr[*]")
     expect_equal(shw(xp), "XPathExpr[*]")
 
-    xp <- XPathExpr$new("//")
+    xp <- XPathExpr("//")
     expect_equal(xp$repr(), "XPathExpr[//*]")
     expect_equal(shw(xp), "XPathExpr[//*]")
 
-    xp <- XPathExpr$new(element = "a")
+    xp <- XPathExpr(element = "a")
     expect_equal(xp$repr(), "XPathExpr[a]")
     expect_equal(shw(xp), "XPathExpr[a]")
 
-    xp <- XPathExpr$new("//a/", "b")
+    xp <- XPathExpr("//a/", "b")
     expect_equal(xp$repr(), "XPathExpr[//a/b]")
     expect_equal(shw(xp), "XPathExpr[//a/b]")
 })
@@ -543,7 +543,7 @@ test_that("HTMLTranslator rejects unknown construction arguments", {
 test_that("a translator subclass can add new pseudo-class handlers", {
     # Dispatch is dynamic, so a handler defined only on a subclass is
     # found without editing the base class
-    BlinkTranslator <- R6::R6Class("BlinkTranslator",
+    BlinkTranslator <- translator_class("BlinkTranslator",
         inherit = GenericTranslator,
         public = list(
             xpath_blink_pseudo = function(xpath) {
@@ -568,7 +568,7 @@ test_that("a translator subclass can add new pseudo-class handlers", {
 })
 
 test_that("a translator subclass can override id_attribute", {
-    XMLIdTranslator <- R6::R6Class("XMLIdTranslator",
+    XMLIdTranslator <- translator_class("XMLIdTranslator",
         inherit = GenericTranslator,
         public = list(id_attribute = "xml:id"))
 
@@ -609,6 +609,6 @@ test_that("unimplemented methods throw errors", {
     # A namespaced *name* is still counted by its own node test
     expect_equal(translator$css_to_xpath("svg|g:first-of-type"),
                  paste("descendant-or-self::svg:g",
-                       "[count(preceding-sibling::svg:g) = 0]",
+                       "[not(preceding-sibling::svg:g[1])]",
                        sep = ""))
 })

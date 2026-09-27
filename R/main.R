@@ -14,7 +14,7 @@ xpath_cache_key <- function(selector, prefix, translator) {
 # The three translators hold no per-call state (see GenericTranslator
 # and HTMLTranslator in xpath.R: neither ever assigns to a 'self$'
 # field outside 'initialize'), so one instance of each is created
-# lazily and reused rather than allocating a fresh R6 object -- and
+# lazily and reused rather than allocating a fresh translator object -- and
 # its inheritance chain of fields -- on every css_to_xpath() call.
 # This is purely an internal reuse of otherwise-stateless objects and
 # is not a cache of translation results.
@@ -119,6 +119,11 @@ css_to_xpath <- function(selector, prefix = "descendant-or-self::", translator =
              paste0(badArgs, " (length ", argLengths[badArgs], ")",
                     collapse = ", "))
     }
+
+    # A single translation, which is the usual call, needs neither the
+    # recycling nor the per-call cache below
+    if (maxArgLength == 1L)
+        return(get_translator(translator)$css_to_xpath(selector, prefix))
 
     selector <- rep(selector, length.out = maxArgLength)
     prefix <- rep(prefix, length.out = maxArgLength)
@@ -228,11 +233,17 @@ querySelectorAllNS.XMLNode <- function(doc, selector, ns,
 # The first step shared by the XML methods below: validate the
 # selector, settle on the translator for the document and translate,
 # and put the namespace object into the form XML::getNodeSet() takes.
-xmlQuery <- function(doc, selector, ns, translator, ...) {
+#
+# 'ns_formatted' is set by ns_dispatch(), which has already put 'ns'
+# through formatNS(). Being named after '...', it is only ever matched
+# by its full name, so it cannot capture an argument meant for
+# css_to_xpath().
+xmlQuery <- function(doc, selector, ns, translator, ...,
+                     ns_formatted = FALSE) {
     validateSelector(selector)
     translator <- xmlTranslator(translator, doc)
     list(xpath = css_to_xpath(selector, translator = translator, ...),
-         ns = if (is.null(ns)) NULL else formatNS(ns))
+         ns = if (is.null(ns) || ns_formatted) ns else formatNS(ns))
 }
 
 # XML::getNodeSet() derives a default set of namespaces from the
@@ -264,9 +275,11 @@ querySelector.XMLInternalNode <- function(doc, selector, ns = NULL,
     xmlFirstMatch(doc, query$xpath, query$ns)
 }
 
-querySelector.XMLInternalDocument <- function(doc, selector, ns = NULL, ...) {
+querySelector.XMLInternalDocument <- function(doc, selector, ns = NULL,
+                                              translator = NULL, ...) {
     validateSelector(selector)
-    querySelector(XML::xmlRoot(doc), selector, ns, ...)
+    translator <- xmlDocumentTranslator(translator, doc)
+    querySelector(XML::xmlRoot(doc), selector, ns, translator = translator, ...)
 }
 
 # Each node of the set is queried in turn and the first match ends the
@@ -288,9 +301,11 @@ querySelectorAll.XMLInternalNode <- function(doc, selector, ns = NULL,
     xmlMatches(doc, query$xpath, query$ns)
 }
 
-querySelectorAll.XMLInternalDocument <- function(doc, selector, ns = NULL, ...) {
+querySelectorAll.XMLInternalDocument <- function(doc, selector, ns = NULL,
+                                                 translator = NULL, ...) {
     validateSelector(selector)
-    querySelectorAll(XML::xmlRoot(doc), selector, ns, ...)
+    translator <- xmlDocumentTranslator(translator, doc)
+    querySelectorAll(XML::xmlRoot(doc), selector, ns, translator = translator, ...)
 }
 
 querySelectorAll.XMLNodeSet <- function(doc, selector, ns = NULL,
@@ -322,12 +337,15 @@ querySelectorAllNS.XMLInternalDocument <- function(doc, selector, ns,
 
 # The xml2 counterpart of xmlQuery(). xml2 wants the namespaces as an
 # argument to every query, and takes the document's own when the
-# caller named none.
-xml2Query <- function(doc, selector, ns, translator, ...) {
+# caller named none. 'ns_formatted' is as for xmlQuery().
+xml2Query <- function(doc, selector, ns, translator, ...,
+                      ns_formatted = FALSE) {
     validateSelector(selector)
     translator <- xml2Translator(translator, doc)
     list(xpath = css_to_xpath(selector, translator = translator, ...),
-         ns = if (is.null(ns)) xml2::xml_ns(doc) else formatNS(ns))
+         ns = if (is.null(ns)) xml2::xml_ns(doc)
+              else if (ns_formatted) ns
+              else formatNS(ns))
 }
 
 # xml2::xml_find_first() stops at the first match, which is the
@@ -440,6 +458,18 @@ xmlTranslator <- function(translator, doc) {
         "generic"
 }
 
+# xmlTranslator() for a whole document. The document object's own
+# class already says whether XML::htmlParse() read it, so there is no
+# need to ask libxml2 through an XPath query as a node has to.
+xmlDocumentTranslator <- function(translator, doc) {
+    if (!is.null(translator))
+        translator
+    else if (inherits(doc, "HTMLInternalDocument"))
+        "html"
+    else
+        "generic"
+}
+
 # xml2 does not export a constructor for an empty nodeset, but this
 # is the structure it uses for one.
 emptyNodeSet <- function() {
@@ -496,7 +526,7 @@ ns_dispatch <- function(query_fun, doc, selector, ns,
         argument_stop("A namespace must be provided.")
     ns <- formatNS(ns)
     prefix <- formatNSPrefix(ns, prefix)
-    query_fun(doc, selector, ns, prefix = prefix, ...)
+    query_fun(doc, selector, ns, prefix = prefix, ..., ns_formatted = TRUE)
 }
 
 # The namespace filter is relative to the queried node, so that a query
