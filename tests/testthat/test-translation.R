@@ -38,7 +38,7 @@ test_that("translation from parsed objects to XPath works", {
     expect_equal(xpath("\\31 23"),
                  "*[name() = '123' and namespace-uri() = '']")
     expect_equal(xpath("[\\31 23]"),
-                 "*[attribute::*[name() = '123']]")
+                 "*[attribute::*[name() = '123' and namespace-uri() = '']]")
     expect_equal(xpath("e[foo='\\31 23']"), "e[@foo = '123']")
     expect_equal(xpath("e[foo='x\\79 z']"), "e[@foo = 'xyz']")
     expect_equal(xpath("e[foo='\\4a']"), "e[@foo = 'J']")
@@ -142,9 +142,12 @@ test_that("translation from parsed objects to XPath works", {
                  "*[name() = 'é' and namespace-uri() = '' and preceding-sibling::*[name() = 'é' and namespace-uri() = ''][1] and not(preceding-sibling::*[name() = 'é' and namespace-uri() = ''][2])]")
     expect_equal(xpath('é:nth-last-of-type(2)'),
                  "*[name() = 'é' and namespace-uri() = '' and following-sibling::*[name() = 'é' and namespace-uri() = ''][1] and not(following-sibling::*[name() = 'é' and namespace-uri() = ''][2])]")
-    # likewise for elements in any namespace, via local-name()
-    expect_equal(xpath('*|e:first-of-type'),
-                 "*[local-name() = 'e' and not(preceding-sibling::*[local-name() = 'e'][1])]")
+    # an element in any namespace has no node test that counts siblings
+    # of its own expanded name: local-name() would count 'a:e' and an
+    # 'e' in no namespace together, so it is refused like '*'
+    expect_error(xpath('*|e:first-of-type'),
+                 "\\*:first-of-type is not implemented",
+                 class = "selectr_translation_error")
     expect_equal(xpath('e:empty'),
                  "e[not(*) and not(string-length())]")
     expect_equal(xpath('e:EmPTY'),
@@ -172,17 +175,19 @@ test_that("translation from parsed objects to XPath works", {
                  "e[.//*[not(self::f)]]")
     # Selectors Level 4: complex selectors inside functional pseudo-classes
     # apply the rightmost compound to the candidate and walk the rest
-    # through reversed axes
+    # through reversed axes, each naming its element in the node test of
+    # the axis step - except under '+', where the position predicate [1]
+    # must come first
     expect_equal(xpath(':is(a b)'),
-                 "*[self::b and ancestor::*[self::a]]")
+                 "*[self::b and ancestor::a]")
     expect_equal(xpath(':is(a > b)'),
-                 "*[self::b and parent::*[self::a]]")
+                 "*[self::b and parent::a]")
     expect_equal(xpath(':is(a + b)'),
                  "*[self::b and preceding-sibling::*[1][self::a]]")
     expect_equal(xpath(':is(a ~ b)'),
-                 "*[self::b and preceding-sibling::*[self::a]]")
+                 "*[self::b and preceding-sibling::a]")
     expect_equal(xpath(':is(a > b ~ c)'),
-                 "*[self::c and preceding-sibling::*[self::b and parent::*[self::a]]]")
+                 "*[self::c and preceding-sibling::b[parent::a]]")
     # The combinator chain inside a functional pseudo-class parses the
     # same whether or not whitespace surrounds each combinator, and
     # whether or not trailing whitespace precedes the closing ')'/','
@@ -196,13 +201,13 @@ test_that("translation from parsed objects to XPath works", {
     expect_equal(xpath(':is(a > :is(.x, .y))'),
                  paste0("*[(contains(concat(' ', normalize-space(@class), ' '), ' x ')",
                        " or contains(concat(' ', normalize-space(@class), ' '), ' y '))",
-                       " and parent::*[self::a]]"))
+                       " and parent::a]"))
     expect_equal(xpath('e:not(a b)'),
-                 "e[not(self::b and ancestor::*[self::a])]")
+                 "e[not(self::b and ancestor::a)]")
     expect_equal(xpath(':where(a + b)'),
                  "*[self::b and preceding-sibling::*[1][self::a]]")
     expect_equal(xpath(':is(a.x > b#y)'),
-                 "*[@id = 'y' and self::b and parent::*[contains(concat(' ', normalize-space(@class), ' '), ' x ') and self::a]]")
+                 "*[@id = 'y' and self::b and parent::a[contains(concat(' ', normalize-space(@class), ' '), ' x ')]]")
     # The :is()/:where() alternatives must stay grouped: conditions added
     # before or after the pseudo-class AND with the whole selector list,
     # rather than the ORs flattening into the compound's condition chain
@@ -275,12 +280,13 @@ test_that("translation from parsed objects to XPath works", {
         expect_equal(xpath('di\ua0v'),
                      "*[name() = 'di v' and namespace-uri() = '']") # div\ua0v
         expect_equal(xpath('[h\ua0ref]'),
-                     "*[attribute::*[name() = 'h ref']]") # h\ua0ref
+                     paste0("*[attribute::*[name() = 'h ref' and ", # h\ua0ref
+                            "namespace-uri() = '']]"))
     }
     expect_equal(xpath('di\\[v'),
                  "*[name() = 'di[v' and namespace-uri() = '']")
     expect_equal(xpath('[h\\]ref]'),
-                 "*[attribute::*[name() = 'h]ref']]")
+                 "*[attribute::*[name() = 'h]ref' and namespace-uri() = '']]")
 })
 
 test_that("an escaped delimiter names an element instead of being one", {

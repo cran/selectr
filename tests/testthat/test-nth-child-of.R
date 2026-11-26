@@ -125,19 +125,28 @@ test_that(":nth-child with complex selector works", {
     expect_true(grepl("foo", xpath))
 })
 
-test_that("sibling tests are positional, except an exact position with 'of S'", {
+test_that("sibling tests are positional, except an exact position counting a filtered S", {
+    cls_x <- "contains(concat(' ', normalize-space(@class), ' '), ' x ')"
     # the [1] must stay: libxml2 is pathologically slow on a bare
     # not(preceding-sibling::*)
     expect_equal(css_to_xpath("li:first-child", prefix = ""),
                  "li[not(preceding-sibling::*[1])]")
     expect_equal(css_to_xpath("li:nth-child(-n+2 of b)", prefix = ""),
-                 "li[self::b and not(preceding-sibling::*[self::b][2])]")
+                 "li[self::b and not(preceding-sibling::b[2])]")
     expect_equal(css_to_xpath("li:nth-last-child(n+3 of b)", prefix = ""),
-                 "li[self::b and following-sibling::*[self::b][2]]")
-    # writing S once rather than twice keeps nested 'of S' arguments
-    # from growing faster than they already do
+                 "li[self::b and following-sibling::b[2]]")
+    # an S that is only a name leaves no predicate to repeat
     expect_equal(css_to_xpath("li:nth-child(3 of b)", prefix = ""),
-                 "li[self::b and count(preceding-sibling::*[self::b]) = 2]")
+                 paste0("li[self::b and preceding-sibling::b[2] and ",
+                        "not(preceding-sibling::b[3])]"))
+    # writing the rest of S once rather than twice keeps nested 'of S'
+    # arguments from growing faster than they already do
+    expect_equal(css_to_xpath("li:nth-child(3 of b.x)", prefix = ""),
+                 paste0("li[", cls_x, " and self::b and count(",
+                        "preceding-sibling::b[", cls_x, "]) = 2]"))
+    expect_equal(css_to_xpath("li:nth-child(3 of :is(b))", prefix = ""),
+                 paste0("li[self::b and count(preceding-sibling::*",
+                        "[self::b]) = 2]"))
 })
 
 test_that("An+B omits a bound the mod test implies, and tests S first", {
@@ -160,17 +169,17 @@ test_that("An+B omits a bound the mod test implies, and tests S first", {
     # the element's own S test comes before the sibling walk, so an
     # element failing S is rejected without counting
     expect_equal(css_to_xpath("li:nth-child(3n+2 of b)", prefix = ""),
-                 paste0("li[self::b and (count(preceding-sibling::*",
-                        "[self::b]) + 2) mod 3 = 0]"))
+                 paste0("li[self::b and (count(preceding-sibling::b)",
+                        " + 2) mod 3 = 0]"))
     # conditions the author wrote keep their source order
     expect_equal(css_to_xpath("li:nth-child(3).x", prefix = ""),
                  paste0("li[preceding-sibling::*[2] and not(preceding-sibling",
                         "::*[3]) and contains(concat(' ', normalize-space(",
                         "@class), ' '), ' x ')]"))
     expect_equal(css_to_xpath("li:nth-child(2 of b).x", prefix = ""),
-                 paste0("li[self::b and count(preceding-sibling::*[self::b])",
-                        " = 1 and contains(concat(' ', normalize-space(",
-                        "@class), ' '), ' x ')]"))
+                 paste0("li[self::b and preceding-sibling::b[1] and ",
+                        "not(preceding-sibling::b[2]) and contains(concat(",
+                        "' ', normalize-space(@class), ' '), ' x ')]"))
 
     # without a bound, nested 'of S' arguments write S twice per level
     nest <- function(series, depth) {
@@ -179,4 +188,144 @@ test_that("An+B omits a bound the mod test implies, and tests S first", {
         nchar(css_to_xpath(s, prefix = ""))
     }
     expect_lt(nest("3n+2", 6) / nest("3n+2", 5), 2.1)
+})
+
+test_that("an 'of S' count names the element of S in its sibling step", {
+    xpath <- function(css) css_to_xpath(css, prefix = "")
+    cls_x <- "contains(concat(' ', normalize-space(@class), ' '), ' x ')"
+
+    expect_equal(xpath(":nth-child(2n+1 of li)"),
+                 "*[self::li and count(preceding-sibling::li) mod 2 = 0]")
+    expect_equal(xpath(":nth-last-child(2n+1 of li)"),
+                 "*[self::li and count(following-sibling::li) mod 2 = 0]")
+    expect_equal(xpath(":nth-child(2n+1 of ns|li)"),
+                 "*[self::ns:li and count(preceding-sibling::ns:li) mod 2 = 0]")
+    expect_equal(xpath(":nth-child(2n+1 of |li)"),
+                 "*[self::li and count(preceding-sibling::li) mod 2 = 0]")
+    expect_equal(xpath(":nth-child(2n+1 of ns|*)"),
+                 "*[self::ns:* and count(preceding-sibling::ns:*) mod 2 = 0]")
+    # the rest of a compound stays a predicate on the named step
+    expect_equal(xpath(":nth-child(2n+1 of li.x)"),
+                 paste0("*[", cls_x, " and self::li and count(",
+                        "preceding-sibling::li[", cls_x, "]) mod 2 = 0]"))
+    # a complex S names its rightmost compound
+    expect_equal(xpath(":nth-last-child(2 of ul > li)"),
+                 paste0("*[self::li and parent::ul and count(",
+                        "following-sibling::li[parent::ul]) = 1]"))
+    # with no predicate left, an exact position is tested positionally
+    expect_equal(xpath(":nth-last-child(3 of li)"),
+                 paste0("*[self::li and following-sibling::li[2] and ",
+                        "not(following-sibling::li[3])]"))
+    expect_equal(xpath(":nth-child(1 of ns|li)"),
+                 "*[self::ns:li and not(preceding-sibling::ns:li[1])]")
+
+    # a name that cannot be the node test stays in the predicate
+    expect_equal(xpath(":nth-child(2n+1 of *)"),
+                 "*[count(preceding-sibling::*) mod 2 = 0]")
+    expect_equal(xpath(":nth-child(2n+1 of *|li)"),
+                 paste0("*[local-name() = 'li' and count(preceding-sibling",
+                        "::*[local-name() = 'li']) mod 2 = 0]"))
+    expect_equal(xpath(":nth-child(2n+1 of \\31 x)"),
+                 paste0("*[name() = '1x' and namespace-uri() = '' and ",
+                        "count(preceding-sibling::*[name() = '1x' and ",
+                        "namespace-uri() = '']) mod 2 = 0]"))
+    expect_equal(xpath(":nth-child(2n+1 of :is(li))"),
+                 paste0("*[self::li and count(preceding-sibling::*",
+                        "[self::li]) mod 2 = 0]"))
+    # as does a list, which has no single name to test
+    expect_equal(xpath(":nth-child(3 of li, p)"),
+                 paste0("*[(self::li or self::p) and count(preceding-sibling",
+                        "::*[self::li or self::p]) = 2]"))
+})
+
+# Siblings in no namespace, under two prefixes and in a default
+# namespace, with an unsafe name and classes, so that a sibling step
+# selecting any more or fewer siblings than the predicate it replaces
+# would change some selector's result
+of_step_markup <- paste0(
+    '<root xmlns:a="urn:a" xmlns:b="urn:b">',
+    '<ul id="u1"><li id="l1" class="x"/><a:li id="al1"/><p id="p1"/>',
+    '<li id="l2"/><b:li id="bl1"/><a:li id="al2" class="x"/>',
+    '<li id="l3" class="x"/><é id="e1"/><a:p id="ap1"/><li id="l4"/>',
+    '<é id="e2"/><a:li id="al3"/><li id="l5" class="x"/><p id="p2"/>',
+    '<li id="l6"/><a:li id="al4"/><li id="l7"/></ul>',
+    '<ol id="o1" xmlns="urn:a"><li id="dl1"/><li id="dl2"/><p id="dp1"/>',
+    '<li id="dl3"/></ol></root>')
+of_step_ns <- c(a = "urn:a", b = "urn:b")
+# Each selector with the XPath it had when the counted siblings were
+# always selected as '*' with S in a predicate
+of_step_cases <- list(
+    ":nth-child(2n+1 of li)" =
+        "//*[self::li and count(preceding-sibling::*[self::li]) mod 2 = 0]",
+    ":nth-last-child(even of li)" = paste0(
+        "//*[self::li and (count(following-sibling::*[self::li]) + 1) ",
+        "mod 2 = 0]"),
+    ":nth-child(2 of li)" =
+        "//*[self::li and count(preceding-sibling::*[self::li]) = 1]",
+    ":nth-last-child(1 of li)" =
+        "//*[self::li and not(following-sibling::*[self::li][1])]",
+    ":nth-child(-n+2 of a|li)" =
+        "//*[self::a:li and not(preceding-sibling::*[self::a:li][2])]",
+    ":nth-child(n+3 of a|li)" =
+        "//*[self::a:li and preceding-sibling::*[self::a:li][2]]",
+    ":nth-child(3n+2 of li.x)" = paste0(
+        "//*[contains(concat(' ', normalize-space(@class), ' '), ' x ') and ",
+        "self::li and (count(preceding-sibling::*[contains(concat(' ', ",
+        "normalize-space(@class), ' '), ' x ') and self::li]) + 2) ",
+        "mod 3 = 0]"),
+    ":nth-child(2 of li.x)" = paste0(
+        "//*[contains(concat(' ', normalize-space(@class), ' '), ' x ') and ",
+        "self::li and count(preceding-sibling::*[contains(concat(' ', ",
+        "normalize-space(@class), ' '), ' x ') and self::li]) = 1]"),
+    ":nth-child(odd of *|li)" = paste0(
+        "//*[local-name() = 'li' and count(preceding-sibling::*",
+        "[local-name() = 'li']) mod 2 = 0]"),
+    ":nth-child(2 of |li)" =
+        "//*[self::li and count(preceding-sibling::*[self::li]) = 1]",
+    ":nth-child(2n of a|*)" = paste0(
+        "//*[self::a:* and (count(preceding-sibling::*[self::a:*]) + 1) ",
+        "mod 2 = 0]"),
+    ":nth-last-child(2 of ul > li)" = paste0(
+        "//*[self::li and parent::ul and count(following-sibling::*",
+        "[self::li and parent::ul]) = 1]"),
+    ":nth-child(2 of é)" = paste0(
+        "//*[name() = 'é' and namespace-uri() = '' and count(",
+        "preceding-sibling::*[name() = 'é' and namespace-uri() = '']) = 1]"),
+    ":nth-child(odd of li, a|li)" = paste0(
+        "//*[(self::li or self::a:li) and count(preceding-sibling::*",
+        "[self::li or self::a:li]) mod 2 = 0]"),
+    ":nth-last-child(-2n+5 of li)" = paste0(
+        "//*[self::li and not(following-sibling::*[self::li][5]) and ",
+        "count(following-sibling::*[self::li]) mod -2 = 0]"))
+
+test_that("a named 'of S' sibling step matches as before (xml2)", {
+    skip_if_not_installed("xml2")
+
+    doc <- xml2::read_xml(of_step_markup)
+    ids <- function(xp) {
+        xml2::xml_attr(xml2::xml_find_all(doc, xp, of_step_ns), "id")
+    }
+    for (sel in names(of_step_cases)) {
+        new <- css_to_xpath(sel, prefix = "//")
+        expect_equal(ids(new), ids(of_step_cases[[sel]]), info = sel)
+        expect_gt(length(ids(new)), 0)
+        expect_equal(xml2::xml_attr(querySelectorAll(doc, sel, of_step_ns),
+                                    "id"),
+                     ids(new), info = sel)
+    }
+})
+
+test_that("a named 'of S' sibling step matches as before (XML)", {
+    skip_if_not_installed("XML")
+
+    doc <- XML::xmlParse(of_step_markup, asText = TRUE)
+    ids <- function(xp) {
+        unlist(XML::xpathApply(doc, xp, XML::xmlGetAttr, "id",
+                               namespaces = of_step_ns))
+    }
+    for (sel in names(of_step_cases)) {
+        new <- css_to_xpath(sel, prefix = "//")
+        expect_equal(ids(new), ids(of_step_cases[[sel]]), info = sel)
+        expect_gt(length(ids(new)), 0)
+    }
 })

@@ -18,10 +18,30 @@ test_that("XPathExpr objects print correctly", {
     expect_equal(shw(xp), "XPathExpr[//a/b]")
 })
 
+# The XPath the :lang() translation uses to cut a tail of language
+# subtags just after its first singleton subtag (RFC 4647 step 3.C):
+# every letter and digit maps to 'a', so a singleton reads "-a-"
+singleton_cut <- function(tail) {
+    paste0("substring(", tail, ", 1, string-length(substring-before(",
+           "concat(translate(concat('-', ", tail, "), ",
+           "'abcdefghijklmnopqrstuvwxyz0123456789', ",
+           "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), 'a-'), '-a-')) + 2)")
+}
+
 test_that("Generic translator validates language arguments", {
     translator <- GenericTranslator$new()
     expect_equal(translator$css_to_xpath("xml:lang(en)"), "descendant-or-self::xml[lang('en')]")
-    expect_equal(translator$css_to_xpath("xml:lang(en-nz)"), "descendant-or-self::xml[lang('en-nz')]")
+    # "en-nz" names two subtags, so RFC 4647 extended filtering applies,
+    # which XPath's lang() cannot express: the nearest xml:lang is
+    # matched the way the HTML translator matches lang
+    xlc <- "translate(@xml:lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
+    expect_equal(translator$css_to_xpath("xml:lang(en-nz)"),
+                 paste0("descendant-or-self::xml[ancestor-or-self::*[@xml:lang][1][",
+                        "starts-with(concat(", xlc, ", '-'), 'en-') and ",
+                        "contains(concat('-', ",
+                        singleton_cut(paste0("substring-after(concat(", xlc,
+                                             ", '-'), 'en-')")),
+                        "), '-nz-')]]"))
 
     expect_error(translator$css_to_xpath("xml:lang()"), "Expected at least one argument.*")
     expect_error(translator$css_to_xpath("xml:lang(1)"), "Expected string, ident, or \\* arguments.*")
@@ -36,16 +56,19 @@ test_that("Generic translator validates language arguments", {
 
 test_that("HTML translator validates language arguments", {
     translator <- HTMLTranslator$new()
+    lc <- "translate(@lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
     expect_equal(translator$css_to_xpath("html:lang(en)"), "descendant-or-self::html[ancestor-or-self::*[@lang][1][starts-with(concat(translate(@lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'en-')]]")
     # "en-nz" names two subtags, so RFC 4647 extended filtering applies
     # (see the "extended-filtering exact ranges" test below) rather than
-    # the single-subtag prefix test used for "en" above
+    # the single-subtag prefix test used for "en" above. The "nz" is
+    # searched for only up to the first singleton after the "en".
     expect_equal(translator$css_to_xpath("html:lang(en-nz)"),
                  paste0("descendant-or-self::html[ancestor-or-self::*[@lang][1][",
-                        "starts-with(concat(translate(@lang, ",
-                        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'en-') and ",
-                        "contains(concat('-', substring-after(concat(translate(@lang, ",
-                        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '-'), 'en-')), '-nz-')]]"))
+                        "starts-with(concat(", lc, ", '-'), 'en-') and ",
+                        "contains(concat('-', ",
+                        singleton_cut(paste0("substring-after(concat(", lc,
+                                             ", '-'), 'en-')")),
+                        "), '-nz-')]]"))
 
     expect_error(translator$css_to_xpath("html:lang()"), "Expected at least one argument.*")
     expect_error(translator$css_to_xpath("html:lang(1)"), "Expected string, ident, or \\* arguments.*")
@@ -111,9 +134,12 @@ test_that("the HTML case-insensitive attributes fold their values", {
                  "descendant-or-self::*[@data-type = 'Foo']")
     expect_equal(translator$css_to_xpath('[svg|type="Foo"]'),
                  "descendant-or-self::*[@svg:type = 'Foo']")
+    # Under '*|' the rule still holds for the attribute in no
+    # namespace, and only for that one
     expect_equal(translator$css_to_xpath('[*|type="Foo"]'),
                  paste0("descendant-or-self::*[@*[local-name() = 'type']",
-                        " = 'Foo']"))
+                        "[namespace-uri() = '' and ", lc("."),
+                        " = 'foo' or . = 'Foo']]"))
 
     # The rule is HTML's: neither the xhtml nor the generic translator
     # serves an HTML document
@@ -131,7 +157,8 @@ test_that("the HTML translator folds names as an HTML parser does", {
     expect_equal(translator$css_to_xpath("\\C4[\\C4=x]"),
                  paste0("descendant-or-self::*[name() = '\u00c4' and ",
                         "namespace-uri() = '' and ",
-                        "attribute::*[name() = '\u00c4'] = 'x']"))
+                        "attribute::*[name() = '\u00c4' and ",
+                        "namespace-uri() = ''] = 'x']"))
     # U+041B CYRILLIC CAPITAL LETTER EL
     expect_equal(translator$css_to_xpath("\\41b"),
                  paste0("descendant-or-self::*[name() = '\u041b' and ",
@@ -159,7 +186,8 @@ test_that("ASCII folds cope with a name containing a noncharacter", {
         # An attribute name, lowercased the same way
         expect_equal(translator$css_to_xpath(paste0("[", esc, "=x]"),
                                              prefix = ""),
-                     paste0("*[attribute::*[name() = '", ch, "'] = 'x']"))
+                     paste0("*[attribute::*[name() = '", ch,
+                            "' and namespace-uri() = ''] = 'x']"))
         # A :lang() range: no fold to reach - a noncharacter cannot
         # appear in an RFC 4647 language range - but the range still
         # has to be named in a selectr condition, not crash the
@@ -365,14 +393,15 @@ test_that("HTML translator handles :lang() extended-filtering wildcards", {
     # A leading wildcard "*-CH" matches any tag carrying a "ch" subtag
     # after the first: RFC 4647 step 2 pairs the '*' with the tag's
     # primary subtag, so that subtag is consumed rather than searched
-    # (substring-after drops it before the containment test). Both the
-    # unquoted (tokenized as '*' + "-CH") and quoted spellings
-    # reassemble to the same range and translation.
-    expected_star_ch <- sprintf(
-        paste0("descendant-or-self::*[ancestor-or-self::*[@lang][1]",
-               "[contains(concat('-', substring-after(concat(%s, '-'), '-')), ",
-               "'-ch-')]]"),
-        lc)
+    # (substring-after drops it before the containment test, which looks
+    # no further than the first singleton). Both the unquoted (tokenized
+    # as '*' + "-CH") and quoted spellings reassemble to the same range
+    # and translation.
+    expected_star_ch <- paste0(
+        "descendant-or-self::*[ancestor-or-self::*[@lang][1]",
+        "[contains(concat('-', ",
+        singleton_cut(paste0("substring-after(concat(", lc, ", '-'), '-')")),
+        "), '-ch-')]]")
     expect_equal(translator$css_to_xpath(":lang(*-CH)"), expected_star_ch)
     expect_equal(translator$css_to_xpath('div:lang("*-CH")'),
                  sub("self::\\*", "self::div", expected_star_ch))
@@ -381,11 +410,12 @@ test_that("HTML translator handles :lang() extended-filtering wildcards", {
     # carry a later "de" subtag, in that order (substring-after threads
     # the tail so "de-CH" alone does not match).
     expect_equal(translator$css_to_xpath(":lang(de-*-DE)"),
-                 sprintf(paste0("descendant-or-self::*[ancestor-or-self::*[@lang][1]",
-                                "[starts-with(concat(%1$s, '-'), 'de-') and ",
-                                "contains(concat('-', substring-after(concat(%1$s, '-'), ",
-                                "'de-')), '-de-')]]"),
-                         lc))
+                 paste0("descendant-or-self::*[ancestor-or-self::*[@lang][1]",
+                        "[starts-with(concat(", lc, ", '-'), 'de-') and ",
+                        "contains(concat('-', ",
+                        singleton_cut(paste0("substring-after(concat(", lc,
+                                             ", '-'), 'de-')")),
+                        "), '-de-')]]"))
 
     # A non-trailing wildcard in a comma list translates alongside its
     # neighbours without error
@@ -447,15 +477,221 @@ test_that("HTML :lang() applies extended filtering to exact multi-subtag ranges"
         HTMLTranslator$new()$css_to_xpath("*:lang(de-*)"))
 })
 
-test_that("generic translator's :lang() stays Selectors 3 prefix matching", {
+test_that("HTML :lang() extended filtering stops at a singleton subtag", {
+    # RFC 4647 step 3.C: a singleton subtag (one letter or digit, which
+    # opens an extension or private-use section) reached before a range
+    # subtag is found ends the match, so a "DE" after "-x-" is not a
+    # region. A singleton after the match, or as the primary subtag,
+    # changes nothing.
+    tags <- c("de-DE", "de-x-DE", "de-Latn-x-DE", "de-a-foo-DE",
+              "de-DE-x-foo", "de-Latn-DE", "de-1-DE", "x-foo", "i-klingon",
+              "x-de", "de", "de-x-foo", "de-DE-x-foo-y-bar", "de-y-bar-x-foo",
+              "de-x-a-foo")
+    html <- paste0("<html><body>",
+                   paste0(sprintf('<p id="%s" lang="%s">x</p>', tags, tags),
+                          collapse = ""),
+                   "</body></html>")
+    expected <- list(
+        "de-DE" = c("de-DE", "de-DE-x-foo", "de-Latn-DE",
+                    "de-DE-x-foo-y-bar"),
+        "de-Latn-DE" = "de-Latn-DE",
+        "\\*-DE" = c("de-DE", "de-DE-x-foo", "de-Latn-DE", "x-de",
+                     "de-DE-x-foo-y-bar"),
+        "de-DE, fr-CA" = c("de-DE", "de-DE-x-foo", "de-Latn-DE",
+                           "de-DE-x-foo-y-bar"),
+        "de-*-DE" = c("de-DE", "de-DE-x-foo", "de-Latn-DE",
+                      "de-DE-x-foo-y-bar"),
+        # a singleton in the range matches the tag's first singleton
+        # after the primary subtag, and the search then resumes up to
+        # the next one
+        "de-x-foo" = c("de-DE-x-foo", "de-x-foo", "de-DE-x-foo-y-bar"),
+        "de-x-*-bar" = character(0),
+        "de-y-bar" = "de-y-bar-x-foo",
+        "de-y-foo" = character(0),
+        # a singleton primary subtag is matched like any other
+        "x-foo" = "x-foo",
+        "i-klingon" = "i-klingon",
+        "\\*-foo" = "x-foo",
+        # a single-subtag range is a prefix test, blind to singletons
+        "de" = c("de-DE", "de-x-DE", "de-Latn-x-DE", "de-a-foo-DE",
+                 "de-DE-x-foo", "de-Latn-DE", "de-1-DE", "de", "de-x-foo",
+                 "de-DE-x-foo-y-bar", "de-y-bar-x-foo", "de-x-a-foo"),
+        "x" = c("x-foo", "x-de"))
+
+    # queried through both xml2 and XML
+    for (range in names(expected)) {
+        css <- paste0("p:lang(", range, ")")
+        if (requireNamespace("xml2", quietly = TRUE)) {
+            doc <- xml2::read_html(html)
+            ids <- xml2::xml_attr(querySelectorAll(doc, css), "id")
+            expect_equal(ids, expected[[range]], label = css)
+        }
+        if (requireNamespace("XML", quietly = TRUE)) {
+            doc <- XML::htmlParse(html, asText = TRUE)
+            ids <- vapply(querySelectorAll(doc, css), XML::xmlGetAttr,
+                          character(1), "id")
+            expect_equal(ids, expected[[range]], label = css)
+        }
+    }
+})
+
+test_that("XHTML :lang() extended filtering stops at a singleton subtag", {
     skip_if_not_installed("xml2")
-    # Unlike the html/xhtml translators, the generic translator has no
-    # lang-attribute to walk by hand, so a multi-subtag exact range
-    # still does a plain |=-style prefix match: it does not skip
-    # subtags the way RFC 4647 extended filtering requires.
-    doc <- xml2::read_xml('<a xml:lang="de-Latn-DE">x</a>')
-    xp <- css_to_xpath("*:lang(de-DE)")
-    expect_length(xml2::xml_find_all(doc, xp), 0)
+    skip_if_not_installed("XML")
+    doc_text <- paste0(
+        "<html xmlns='http://www.w3.org/1999/xhtml'>",
+        "<p id='a' xml:lang='de-DE'/>",
+        "<p id='b' xml:lang='de-x-DE'/>",
+        "<p id='c' lang='de-Latn-x-DE'/>",
+        "<p id='d' xml:lang='de-DE-x-foo' lang='de-x-DE'/>",
+        "<p id='e' xml:lang='de-x-DE' lang='de-DE'/>",
+        "</html>")
+    ns <- c(h = "http://www.w3.org/1999/xhtml")
+    xp <- css_to_xpath("h|p:lang(de-DE)", prefix = "//",
+                       translator = "xhtml")
+    ids <- xml2::xml_attr(
+        xml2::xml_find_all(xml2::read_xml(doc_text), xp, ns), "id")
+    expect_equal(ids, c("a", "d"))
+    ids <- unlist(XML::xpathApply(XML::xmlParse(doc_text, asText = TRUE),
+                                  xp, XML::xmlGetAttr, "id",
+                                  namespaces = ns))
+    expect_equal(ids, c("a", "d"))
+})
+
+test_that("HTML :lang() singleton cut is case-insensitive", {
+    translator <- HTMLTranslator$new()
+    # the tag is lowercased before the singleton search, so an
+    # uppercase "X" ends it too, and the range is lowercased alike
+    expect_equal(translator$css_to_xpath("p:lang(DE-DE)"),
+                 translator$css_to_xpath("p:lang(de-de)"))
+    skip_if_not_installed("xml2")
+    doc <- xml2::read_html(paste0('<p id="a" lang="DE-X-DE">x</p>',
+                                  '<p id="b" lang="DE-LATN-DE">y</p>'))
+    expect_equal(xml2::xml_attr(querySelectorAll(doc, "p:lang(de-DE)"),
+                                "id"),
+                 "b")
+})
+
+test_that("generic :lang() translation sits alongside the HTML ones", {
+    generic <- GenericTranslator$new()
+    html <- HTMLTranslator$new()
+    xhtml <- HTMLTranslator$new(xhtml = TRUE)
+    xhtml_lang <- paste0("concat(@xml:lang, substring(@lang, 1, ",
+                         "string-length(@lang) * not(@xml:lang)))")
+    as_generic <- function(xp) gsub("@lang", "@xml:lang", xp, fixed = TRUE)
+    as_xhtml <- function(xp) {
+        xp <- gsub("[@lang][1]", "[@xml:lang or @lang][1]", xp, fixed = TRUE)
+        gsub("translate(@lang,", paste0("translate(", xhtml_lang, ","), xp,
+             fixed = TRUE)
+    }
+
+    # A single-subtag range stays XPath's lang() in the generic
+    # translator, alone or in a list
+    expect_equal(generic$css_to_xpath("p:lang(en)"),
+                 "descendant-or-self::p[lang('en')]")
+    expect_equal(generic$css_to_xpath("p:lang(en, fr)"),
+                 "descendant-or-self::p[lang('en') or lang('fr')]")
+
+    # A range naming more than one subtag, a singleton, or a non-trailing
+    # wildcard is matched as the HTML translators match it, with the
+    # nearest xml:lang standing in for lang
+    for (range in c("en-US", "EN-us", "de-x-foo", "x-foo", "*-CH",
+                    "de-*-DE", "en-US-*")) {
+        css <- paste0("p:lang(", range, ")")
+        expect_equal(generic$css_to_xpath(css),
+                     as_generic(html$css_to_xpath(css)), label = css)
+        expect_equal(xhtml$css_to_xpath(css),
+                     as_xhtml(html$css_to_xpath(css)), label = css)
+    }
+
+    # In a list, each range takes its own form
+    expect_equal(generic$css_to_xpath("p:lang(en, fr-CA)"),
+                 paste0("descendant-or-self::p[lang('en') or ",
+                        sub("^descendant-or-self::p\\[(.*)\\]$", "\\1",
+                            generic$css_to_xpath("p:lang(fr-CA)")),
+                        "]"))
+    for (css in c("p:lang(en)", "p:lang(en-US)", "p:lang(en, fr-CA)"))
+        expect_equal(xhtml$css_to_xpath(css),
+                     as_xhtml(html$css_to_xpath(css)), label = css)
+})
+
+test_that("generic :lang() applies extended filtering to xml:lang", {
+    doc_text <- paste0(
+        "<r>",
+        "<p id='latn' xml:lang='en-Latn-US'/>",
+        "<p id='us' xml:lang='en-US'/>",
+        "<p id='upper' xml:lang='EN-LATN-us'/>",
+        "<p id='gb' xml:lang='en-GB'/>",
+        "<p id='en' xml:lang='en'/>",
+        "<p id='us-x' xml:lang='en-x-US'/>",
+        "<p id='us-priv' xml:lang='en-US-x-foo'/>",
+        "<div xml:lang='en-Latn-US'>",
+        "<p id='inherited'/>",
+        "<p id='reset' xml:lang=''/>",
+        "<div xml:lang=''><p id='reset-inherited'/></div>",
+        "<p id='nearer' xml:lang='en-GB'/>",
+        "</div>",
+        "<p id='de' xml:lang='de-DE'/>",
+        "<p id='de-x' xml:lang='de-x-DE'/>",
+        "<p id='de-latn' xml:lang='de-Latn-DE'/>",
+        "</r>")
+    expected <- list(
+        # subtags may be skipped, case aside, but not past a singleton
+        "en-US" = c("latn", "us", "upper", "us-priv", "inherited"),
+        "EN-us" = c("latn", "us", "upper", "us-priv", "inherited"),
+        "de-DE" = c("de", "de-latn"),
+        "en-US, de-DE" = c("latn", "us", "upper", "us-priv", "inherited",
+                           "de", "de-latn"),
+        "en, de-DE" = c("latn", "us", "upper", "gb", "en", "us-x",
+                        "us-priv", "inherited", "nearer", "de", "de-latn"),
+        "*-US" = c("latn", "us", "upper", "us-priv", "inherited"),
+        "en-*-US" = c("latn", "us", "upper", "us-priv", "inherited"),
+        "en-x-US" = "us-x")
+    for (range in names(expected)) {
+        css <- paste0("p:lang(", range, ")")
+        if (requireNamespace("xml2", quietly = TRUE)) {
+            doc <- xml2::read_xml(doc_text)
+            ids <- xml2::xml_attr(querySelectorAll(doc, css), "id")
+            expect_equal(ids, expected[[range]], label = css)
+        }
+        if (requireNamespace("XML", quietly = TRUE)) {
+            doc <- XML::xmlParse(doc_text, asText = TRUE)
+            ids <- vapply(querySelectorAll(doc, css), XML::xmlGetAttr,
+                          character(1), name = "id")
+            expect_equal(ids, expected[[range]], label = css)
+        }
+    }
+})
+
+test_that("generic and HTML :lang() agree on singleton subtags", {
+    skip_if_not_installed("xml2")
+    tags <- c("de-DE", "de-x-DE", "de-Latn-x-DE", "de-a-foo-DE",
+              "de-DE-x-foo", "de-Latn-DE", "de-1-DE", "x-foo", "i-klingon",
+              "x-de", "de", "de-x-foo", "de-DE-x-foo-y-bar", "de-y-bar-x-foo",
+              "de-x-a-foo", "DE-X-de", "De-Latn-dE")
+    html_doc <- xml2::read_html(paste0(
+        "<html><body>",
+        paste0(sprintf('<p id="%s" lang="%s">x</p>', tags, tags),
+               collapse = ""),
+        "</body></html>"))
+    xml_doc <- xml2::read_xml(paste0(
+        "<r>",
+        paste0(sprintf('<p id="%s" xml:lang="%s"/>', tags, tags),
+               collapse = ""),
+        "</r>"))
+    ids <- function(doc, css, translator)
+        xml2::xml_attr(xml2::xml_find_all(
+            doc, css_to_xpath(css, translator = translator)), "id")
+    expect_equal(ids(xml_doc, "p:lang(de-DE)", "generic"),
+                 c("de-DE", "de-DE-x-foo", "de-Latn-DE",
+                   "de-DE-x-foo-y-bar", "De-Latn-dE"))
+    for (range in c("de-DE", "de-Latn-DE", "\\*-DE", "de-*-DE", "de-x-foo",
+                    "de-x-*-bar", "de-y-bar", "x-foo", "i-klingon",
+                    "\\*-foo", "de", "x", "de-*", "de-DE-*", "DE-x-DE")) {
+        css <- paste0("p:lang(", range, ")")
+        expect_equal(ids(xml_doc, css, "generic"),
+                     ids(html_doc, css, "html"), label = css)
+    }
 })
 
 test_that(':lang("") matches elements with no tagged language', {
@@ -483,22 +719,28 @@ test_that(':lang("") matches elements with no tagged language', {
     expect_equal(xml2::xml_name(xml2::xml_find_all(generic, xp2)), c("r", "a", "b"))
 })
 
-test_that("generic translator rejects :lang() non-trailing wildcards", {
-    # XPath 1.0's lang() cannot express extended filtering, and the
-    # generic translator has no lang attribute to walk, so an interior or
-    # leading wildcard is rejected (quoted or not) rather than mismatched.
+test_that("generic translator accepts :lang() non-trailing wildcards", {
+    # With extended filtering done on the nearest xml:lang, a leading or
+    # interior wildcard translates as it does for the HTML translators
     translator <- GenericTranslator$new()
-    msg <- "non-trailing position"
-    expect_error(translator$css_to_xpath(":lang(*-CH)"), msg)
-    expect_error(translator$css_to_xpath(':lang("*-CH")'), msg)
-    expect_error(translator$css_to_xpath(":lang(de-*-DE)"), msg)
-    expect_error(translator$css_to_xpath('div:lang("de-*-DE")'), msg)
-    expect_error(translator$css_to_xpath(":lang(en, *-CH)"), msg)
+    xlc <- "translate(@xml:lang, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
+    expected_star_ch <- paste0(
+        "descendant-or-self::*[ancestor-or-self::*[@xml:lang][1]",
+        "[contains(concat('-', ",
+        singleton_cut(paste0("substring-after(concat(", xlc, ", '-'), '-')")),
+        "), '-ch-')]]")
+    expect_equal(translator$css_to_xpath(":lang(*-CH)"), expected_star_ch)
+    expect_equal(translator$css_to_xpath(':lang("*-CH")'), expected_star_ch)
+    expect_error(translator$css_to_xpath(":lang(de-*-DE)"), NA)
+    expect_error(translator$css_to_xpath('div:lang("de-*-DE")'), NA)
+    expect_error(translator$css_to_xpath(":lang(en, *-CH)"), NA)
 
-    # Bare and trailing wildcards remain valid in the generic translator
+    # Bare and trailing wildcards are unchanged
     expect_error(translator$css_to_xpath(":lang(*)"), NA)
-    expect_error(translator$css_to_xpath(":lang(en-*)"), NA)
-    expect_error(translator$css_to_xpath('div:lang("en-*")'), NA)
+    expect_equal(translator$css_to_xpath(":lang(en-*)"),
+                 "descendant-or-self::*[lang('en')]")
+    expect_equal(translator$css_to_xpath('div:lang("en-*")'),
+                 "descendant-or-self::div[lang('en')]")
     expect_error(translator$css_to_xpath(":lang(en-*, fr)"), NA)
     expect_error(translator$css_to_xpath(":lang(*, de)"), NA)
 })
@@ -611,4 +853,50 @@ test_that("unimplemented methods throw errors", {
                  paste("descendant-or-self::svg:g",
                        "[not(preceding-sibling::svg:g[1])]",
                        sep = ""))
+})
+
+test_that("the of-type pseudo-classes refuse an element in any namespace", {
+    # '*|e' names a local name but not a namespace, and siblings are of
+    # the same type only when their expanded names match: no node test
+    # counts them, so every of-type pseudo-class refuses it as it does
+    # the universal selector
+    of_type <- c("first-of-type", "last-of-type", "only-of-type",
+                 "nth-of-type(2)", "nth-last-of-type(2)")
+    labels <- c("first-of-type", "last-of-type", "only-of-type",
+                "nth-of-type\\(\\)", "nth-last-of-type\\(\\)")
+    translators <- list(GenericTranslator$new(), HTMLTranslator$new(),
+                        HTMLTranslator$new(xhtml = TRUE))
+    for (translator in translators) {
+        for (i in seq_along(of_type)) {
+            expect_error(translator$css_to_xpath(paste0("*|e:", of_type[i])),
+                         paste0("^\\*:", labels[i], " is not implemented"),
+                         class = "selectr_translation_error")
+            expect_error(
+                translator$css_to_xpath(paste0("a + *|e:", of_type[i])),
+                paste0("^\\*:", labels[i], " is not implemented"),
+                class = "selectr_translation_error")
+        }
+        # A named element, in no namespace or a given one, still counts
+        # its siblings by its own node test
+        expect_equal(translator$css_to_xpath("e:first-of-type"),
+                     "descendant-or-self::e[not(preceding-sibling::e[1])]")
+        expect_equal(translator$css_to_xpath("ns|e:first-of-type"),
+                     paste0("descendant-or-self::ns:e",
+                            "[not(preceding-sibling::ns:e[1])]"))
+    }
+})
+
+test_that("'*|e' with an of-type pseudo-class is refused, not mismatched", {
+    skip_if_not_installed("xml2")
+    # 'a:e' and the 'e' in no namespace are each the first of their
+    # own type; counting by local name alone would select only one
+    doc <- xml2::read_xml('<root xmlns:a="A"><a:e id="1"/><e id="2"/></root>')
+    expect_error(querySelectorAll(doc, "*|e:first-of-type"),
+                 class = "selectr_translation_error")
+    expect_equal(xml2::xml_attr(querySelectorAll(doc, "e:first-of-type"),
+                                "id"),
+                 "2")
+    expect_equal(xml2::xml_attr(
+        querySelectorAll(doc, "a|e:first-of-type", ns = c(a = "A")), "id"),
+        "1")
 })

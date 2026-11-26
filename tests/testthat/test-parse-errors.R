@@ -113,6 +113,8 @@ test_that("useful errors are returned", {
     # trailing combinators in arguments
     expect_error(get_error(":is(a >)"),
                  "Expected selector, got <DELIM '\\)' at 8>")
+    expect_error(get_error(":is(a > "),
+                 "Expected selector, got <EOF at 9>")
     # Only :is()/:where() take a forgiving selector list, so an empty
     # argument list stays an error for the other functional pseudo-classes
     expect_error(get_error(":not()"),
@@ -125,6 +127,48 @@ test_that("useful errors are returned", {
     # selector: a lone ',' is still an error
     expect_error(get_error(":is(,)"),
                  "Expected selector, got <DELIM ',' at 5>")
+})
+
+test_that("a comment separates the tokens either side of it", {
+    # Two tokens with a comment between them stay two tokens, so they
+    # cannot be read as the one token their text would spell together
+    expect_error(css_to_xpath(":nth-child(1/**/0)"),
+                 "Invalid An\\+B expression in :nth-child\\(\\): '1 0'")
+    expect_error(css_to_xpath(":nth-child(2/**/n)"),
+                 "Invalid An\\+B expression")
+    expect_error(css_to_xpath(":nth-child(2/**/n+1)"),
+                 "Invalid An\\+B expression")
+    expect_error(css_to_xpath(":nth-child(-/**/n)"),
+                 "Invalid An\\+B expression")
+    expect_error(css_to_xpath(":nth-child(+/**/5)"),
+                 "Invalid An\\+B expression")
+    expect_error(css_to_xpath(":nth-child(-/**/2)"),
+                 "Invalid An\\+B expression")
+    expect_error(css_to_xpath(":lang(en/**/fr)"),
+                 "Expected ',' or '\\)', got <IDENT 'fr' at 13>")
+    expect_error(css_to_xpath(":lang(*/**/-DE)"),
+                 "Expected ',' or '\\)', got <IDENT '-DE' at 12>")
+    # A function token is its name and '(' written together
+    expect_error(css_to_xpath(":not/**/(a)"),
+                 "Expected selector, got <DELIM '\\(' at 9>")
+    expect_error(css_to_xpath(":nth-child/**/(2)"),
+                 "Expected selector, got <DELIM '\\(' at 15>")
+
+    # Where the grammar allows whitespace, a comment is as good
+    same <- function(a, b) expect_equal(css_to_xpath(a), css_to_xpath(b))
+    same(":nth-child(2n/**/+1)", ":nth-child(2n+1)")
+    same(":nth-child(2n+/**/1)", ":nth-child(2n+1)")
+    same(":nth-child(2n /**/ + 1)", ":nth-child(2n+1)")
+    same(":nth-child(n/**/-/**/1)", ":nth-child(n-1)")
+    same(":nth-child(odd/**/)", ":nth-child(odd)")
+    same(":nth-child(2n/**/of/**/a)", ":nth-child(2n of a)")
+    same(":lang(en/**/,/**/fr)", ":lang(en, fr)")
+    same(":not(/**/a/**/)", ":not(a)")
+    # and where it forbids whitespace only to keep the tokens adjacent,
+    # a comment keeps them adjacent: An+B rules out '+ n' but not '+n'
+    same(":nth-child(+/**/n)", ":nth-child(+n)")
+    same("./**/a", ".a")
+    same("a/**/.b", "a.b")
 })
 
 test_that("constructs unclosed at EOF translate as their closed forms", {
@@ -153,6 +197,13 @@ test_that("constructs unclosed at EOF translate as their closed forms", {
     eof("a:where(", "a:where()")
     eof(":not(a", ":not(a)")
     eof(":has(> a", ":has(> a)")
+    # Whitespace before EOF is not a descendant combinator: there is
+    # no selector after it
+    eof(":not(a ", ":not(a)")
+    eof(":is(a b ", ":is(a b)")
+    eof(":has(> a ", ":has(> a)")
+    eof(":where(a, b ", ":where(a, b)")
+    eof(":not(a /* comment", ":not(a)")
     # An ident ending in an escaped backslash, then an unclosed
     # attribute block: tokenizes as <IDENT 'di\'> <DELIM '['>
     # <IDENT 'v'> and auto-closes to an existence test

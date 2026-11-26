@@ -7,7 +7,7 @@
 # closures over this call's frame, so they reach the expression as
 # 'self' and are called as xpath$add_condition() etc., the same as when
 # this was an R6 class.
-XPathExpr <- function(path = "", element = "*", star_prefix = FALSE) {
+XPathExpr <- function(path = "", element = "*") {
     self <- new.env(parent = emptyenv())
     self$path <- path
     self$element <- element
@@ -33,7 +33,6 @@ XPathExpr <- function(path = "", element = "*", star_prefix = FALSE) {
     # any namespace, so its name lives in a local-name() condition
     # (see xpath_element()) rather than in a node test
     self$local_name <- NULL
-    self$star_prefix <- star_prefix
     # When an explicit element name cannot be used as an XPath name
     # test (and so 'element' has been folded into a condition on
     # '*'), an equivalent node test for that name; NULL otherwise.
@@ -173,6 +172,18 @@ XPathExpr <- function(path = "", element = "*", star_prefix = FALSE) {
         }
         self$element <- "*"
     }
+    # Drop the conjunct 'self::<nodetest>' that add_name_test() writes,
+    # for an expression whose candidate is already known to pass that
+    # node test. Only a whole conjunct is dropped, never one alternative
+    # of an "or", and "0" has no conjuncts to drop
+    self$drop_name_test <- function(nodetest) {
+        keep <- self$conditions != paste0("self::", nodetest)
+        if (!all(keep)) {
+            self$conditions <- self$conditions[keep]
+            if (!length(self$conditions))
+                self$condition_is_or <- FALSE
+        }
+    }
     self$join <- function(combiner, other) {
         self$path <- paste0(self$str(), combiner, other$path)
         self$element <- other$element
@@ -261,15 +272,21 @@ is_safe_nodetest <- function(name) {
 # siblings would mean comparing their names against the matched
 # element's own name, which XPath 1.0 cannot express (no current()
 # outside XSLT) - so that case is not implemented, an error shared
-# with the Python cssselect library
+# with the Python cssselect library.
+#
+# '*|e' is refused for the same reason: its type is the expanded name,
+# namespace included, so 'a:e' and an 'e' in no namespace are different
+# types, yet the only node test it has compares local-name() alone and
+# would count them together. Its compound records no 'name_test', so it
+# reads as the universal selector here
 of_type_nodetest <- function(xpath) {
     # 'name_test' takes precedence over 'element': it is only ever
     # recorded when the compound's name is not the node test on the
-    # path step, because the name cannot be written as one - the bare
-    # '*' of '*|e', or the namespaced 'ns:*' of 'ns|é'. Reading
-    # 'element' first would mistake such a named element for the
-    # universal selector and refuse a selector that has a type to
-    # count by
+    # path step, because the name cannot be written as one - the
+    # namespaced 'ns:*' of 'ns|é', or the '*' of a name that needs
+    # quoting. Reading 'element' first would mistake such a named
+    # element for the universal selector and refuse a selector that has
+    # a type to count by
     nodetest <- if (!is.null(xpath$name_test))
         xpath$name_test
     else
@@ -340,6 +357,61 @@ sibling_count_test <- function(axis, nodetest, predicate, op, k) {
            "<=" = paste0("not(", at_least(k + 1), ")"))
 }
 
+# The node test that every candidate of the compound 'xpath' is known to
+# pass, as a pseudo-class argument would write it in a 'self::' test,
+# or NULL when there is none. Only a plain name test counts: the step
+# then selects nothing else, so a 'self::' test of exactly that name is
+# always true there. A wildcard ('*' or 'ns:*') pins no name, and a name
+# folded into a condition ('*|e', or one that needs quoting) is left for
+# the condition to compare
+implied_name_test <- function(xpath) {
+    element <- xpath$element
+    if (is_safe_nodetest(element) && !grepl("(^|:)\\*$", element))
+        element
+    else
+        NULL
+}
+
+# The condition and node test of a pseudo-class argument translated by
+# the translator's argument_xpath(), as list(condition, is_or,
+# node_test) (see xpath_argument_condition()). Only reads the
+# translation, so it can be rendered both before and after the element
+# name is folded into the condition.
+argument_condition <- function(argument) {
+    sub_xpath <- argument$xpath
+    rev_test <- argument$rev_test
+    if (!is.null(rev_test)) {
+        condition <-
+            if (identical(sub_xpath$condition, "0")) {
+                # A rightmost compound that can never match makes
+                # the whole argument impossible; drop the
+                # existence test, as add_condition() would
+                "0"
+            } else if (nzchar(sub_xpath$condition)) {
+                cond <- sub_xpath$condition
+                # The condition becomes one operand of an "and", so
+                # a stored or-group needs its parentheses now
+                if (sub_xpath$condition_is_or)
+                    cond <- paste0("(", cond, ")")
+                paste0(cond, " and ", rev_test)
+            } else
+                rev_test
+        list(condition = condition, is_or = FALSE,
+             node_test = sub_xpath$element)
+    } else if (nzchar(sub_xpath$condition)) {
+        list(condition = sub_xpath$condition,
+             is_or = sub_xpath$condition_is_or,
+             node_test = sub_xpath$element)
+    } else {
+        # An argument that imposes no condition (a bare '*') matches
+        # everything; return an explicit "true()" so callers can tell
+        # "always true" apart from "no condition" instead of silently
+        # dropping the argument from the selector list
+        list(condition = "true()", is_or = FALSE,
+             node_test = sub_xpath$element)
+    }
+}
+
 # A translation failure: valid CSS that names a feature the current
 # translator cannot express as XPath 1.0 (e.g. a non-leading ':scope',
 # or an of-type pseudo-class on the universal selector). Raised without
@@ -408,20 +480,6 @@ stop_non_leading_scope <- function(pos = NULL) {
         ":scope", pos = pos)
 }
 
-# A wildcard in non-trailing position (e.g. :lang(*-CH) or :lang(de-*-DE),
-# quoted or not) is a valid RFC 4647 extended-filtering range. The HTML
-# translators approximate it from the nearest language-attributed
-# ancestor, but the generic translator's only tool is XPath 1.0's
-# lang() function, which can express a prefix match but not an interior
-# wildcard, so it rejects such ranges rather than silently mismatching.
-stop_lang_interior_wildcard <- function(range, pos = NULL) {
-    translation_stop(
-        paste0("Only a bare '*' or a trailing '...-*' wildcard is ",
-               "supported by the generic translator's :lang(); the range ",
-               range, " has a wildcard in a non-trailing position"),
-        ":lang()", pos = pos)
-}
-
 # A range that is not an RFC 4647 extended language range (see
 # lang_range_well_formed()). Selectors 4 says such a range matches
 # nothing while leaving the selector valid; XPath has no way to say
@@ -485,7 +543,7 @@ lang_range_kind <- function(value) {
 # "en-GB" and "en-GB-*" are multi-subtag but "en" and "en-*" are not.
 # A range with more than one subtag needs RFC 4647 extended filtering
 # to match correctly (subtags may be skipped between the ones named),
-# not a plain prefix test - see lang_extended_html_condition().
+# not a plain prefix test - see lang_extended_condition().
 lang_range_multi_subtag <- function(value) {
     grepl("-", sub("-\\*$", "", value), fixed = TRUE)
 }
@@ -557,12 +615,13 @@ lang_attr_value_lc <- function(xhtml) {
     xpath_ascii_lower(lang_attr_value(xhtml))
 }
 
-# The HTML :lang() translation of an RFC 4647 extended-filtering range
-# (one with a wildcard in non-trailing position, e.g. "*-CH" or
-# "de-*-DE"). It tests the nearest language-attributed ancestor,
-# dash-terminating the lowercased language string as "<lang>-" so that
-# each subtag is delimited, then walks the range's subtags left to
-# right: the range's first subtag is paired with the tag's first, so a
+# The :lang() translation of an RFC 4647 extended-filtering range (one
+# naming more than one subtag, e.g. "de-DE", or with a wildcard in
+# non-trailing position, e.g. "*-CH" or "de-*-DE"). `ancestor` is the
+# step selecting the nearest language-declaring ancestor-or-self and
+# `lang` its lowercased language string. The condition on that step
+# dash-terminates the string as "<lang>-" so that each subtag is
+# delimited, then walks the range's subtags left to right: the range's first subtag is paired with the tag's first, so a
 # literal there must start the tag and a '*' consumes it; a literal
 # subtag after a '*' may appear anywhere further along (contains, over
 # the tail re-bracketed with a leading dash so that it too matches
@@ -571,9 +630,20 @@ lang_attr_value_lc <- function(xhtml) {
 # validated (see lang_ranges()), so every subtag is non-empty and at
 # least one is a literal - an all-wildcard range is "any", not
 # "extended", and never reaches here with nothing to test.
-lang_extended_html_condition <- function(value, xhtml) {
-    lang <- lang_attr_value_lc(xhtml)
-    cursor <- paste0("concat(", lang, ", '-')")
+#
+# RFC 4647 step 3.C also ends the search at a singleton subtag (one
+# letter or digit, which opens an extension or private-use section):
+# in "de-x-DE" the "DE" is not a region, so "de-DE" must not match it.
+# So once the primary subtag is consumed, each literal is searched for
+# only in the tail cut just after its first singleton (see
+# lang_tail_to_singleton()) - the cut keeps the singleton itself, which
+# a singleton in the range (as in "de-x-foo") may match. The uncut tail
+# is threaded alongside, and a matched singleton re-cuts it for the
+# search that follows. A literal found before the cut is at the same
+# place in both, so substring-after advances them together.
+lang_extended_condition <- function(value, ancestor, lang) {
+    tail <- paste0("concat(", lang, ", '-')")
+    cut <- NULL  # the tail up to its first singleton, past the primary
     subtags <- strsplit(ascii_lower(value), "-", fixed = TRUE)[[1]]
     conditions <- character(0)
     anywhere <- FALSE  # may the next literal subtag be preceded by others?
@@ -584,7 +654,8 @@ lang_extended_html_condition <- function(value, xhtml) {
         # primary subtag rather than skipping over it: the rest of the
         # range is searched for in what follows, and "*-CH" matches
         # "de-CH" but neither "ch" nor "ch-DE"
-        cursor <- paste0("substring-after(", cursor, ", '-')")
+        tail <- paste0("substring-after(", tail, ", '-')")
+        cut <- lang_tail_to_singleton(tail)
     }
     for (subtag in subtags) {
         if (subtag == "*") {
@@ -592,23 +663,48 @@ lang_extended_html_condition <- function(value, xhtml) {
             next
         }
         if (!anchored && !anywhere) {
+            # The primary subtag may itself be a singleton ("x-foo",
+            # "i-klingon"), so the tail is cut only after it
             needle <- xpath_literal(paste0(subtag, "-"))
             conditions <- c(conditions,
-                            paste0("starts-with(", cursor, ", ", needle, ")"))
+                            paste0("starts-with(", tail, ", ", needle, ")"))
+            tail <- paste0("substring-after(", tail, ", ", needle, ")")
+            cut <- lang_tail_to_singleton(tail)
         } else {
-            # The tail carries no leading dash, so one is put back for
+            # The tails carry no leading dash, so one is put back for
             # the delimited search
-            cursor <- paste0("concat('-', ", cursor, ")")
             needle <- xpath_literal(paste0("-", subtag, "-"))
             conditions <- c(conditions,
-                            paste0("contains(", cursor, ", ", needle, ")"))
+                            paste0("contains(concat('-', ", cut, "), ",
+                                   needle, ")"))
+            tail <- paste0("substring-after(concat('-', ", tail, "), ",
+                           needle, ")")
+            cut <- if (nchar(subtag) == 1)
+                lang_tail_to_singleton(tail)
+            else
+                paste0("substring-after(concat('-', ", cut, "), ",
+                       needle, ")")
         }
-        cursor <- paste0("substring-after(", cursor, ", ", needle, ")")
         anywhere <- FALSE
         anchored <- TRUE
     }
-    paste0(lang_attr_ancestor(xhtml), "[",
-           paste(conditions, collapse = " and "), "]")
+    paste0(ancestor, "[", paste(conditions, collapse = " and "), "]")
+}
+
+# A lowercased, dash-terminated tail of language subtags ("latn-x-de-"),
+# cut just after its first singleton subtag ("latn-x-"), or left whole
+# if there is none. XPath 1.0 has no regular expressions, so translate()
+# maps every letter and digit to 'a': a singleton then reads "-a-" with
+# a dash put back in front, and substring-before() measures how much of
+# the tail precedes it. Appending "a-" guarantees a match, at the end
+# of the string, when there is no singleton to find.
+lang_tail_to_singleton <- function(tail) {
+    alnum <- paste0(ascii_lower_letters, "0123456789")
+    singleton_at <- paste0(
+        "string-length(substring-before(concat(translate(concat('-', ",
+        tail, "), '", alnum, "', '", strrep("a", nchar(alnum)),
+        "'), 'a-'), '-a-'))")
+    paste0("substring(", tail, ", 1, ", singleton_at, " + 2)")
 }
 
 # The type name of a parse-tree node (or of an XPathExpr), as repr()
@@ -1127,13 +1223,17 @@ GenericTranslator <- translator_class("GenericTranslator",
             },
             error = function(e) {
                 # A selector that nests functional pseudo-classes very
-                # deeply (e.g. hundreds of :not()) overflows R's
-                # expression nesting limit. R >= 4.3 raises a dedicated
-                # `expressionStackOverflowError`; older R raises a plain
-                # error with the same message text, so fall back to
-                # matching that.
-                if (inherits(e, "expressionStackOverflowError") ||
-                    grepl("nested too deeply", conditionMessage(e), fixed = TRUE)) {
+                # deeply (e.g. hundreds of :not()) overflows one of R's
+                # stacks: the expression nesting limit, the node stack
+                # or the C stack, whichever runs out first. R >= 4.3
+                # signals each as a subclass of `stackOverflowError`;
+                # older R raises a plain error, so fall back to
+                # matching the message texts.
+                if (inherits(e, "stackOverflowError") ||
+                    any(vapply(c("nested too deeply", "node stack overflow",
+                                 "C stack usage"),
+                               grepl, logical(1), x = conditionMessage(e),
+                               fixed = TRUE))) {
                     selectr_abort("selector nests functional pseudo-classes too deeply",
                                  "selectr_translation_error", selector = css)
                 }
@@ -1179,68 +1279,77 @@ GenericTranslator <- translator_class("GenericTranslator",
             }
             left
         },
-        xpath_argument_condition = function(subselector) {
+        xpath_argument_condition = function(subselector,
+                                            keep_node_test = FALSE,
+                                            implied = NULL) {
             # Translate one functional pseudo-class argument into a
             # condition on the candidate element, returned as
-            # list(condition, is_or) where 'is_or' marks a top-level
-            # or-expression (see 'condition_is_or'). A complex argument
-            # (CombinedSelector) applies its rightmost compound to the
-            # candidate, with everything to its left becoming an
+            # list(condition, is_or, node_test) where 'is_or' marks a
+            # top-level or-expression (see 'condition_is_or'). A complex
+            # argument (CombinedSelector) applies its rightmost compound
+            # to the candidate, with everything to its left becoming an
             # existence test through reversed axes (e.g. :is(a > b)
-            # matches a 'b' whose parent is an 'a')
+            # matches a 'b' whose parent is an 'a').
+            #
+            # The element name of the rightmost compound normally
+            # becomes a 'self::' test in the condition, which then
+            # holds for any candidate and 'node_test' is '*'. With
+            # 'keep_node_test', the name is instead left as
+            # 'node_test', for a caller that writes it as the node test
+            # of its own axis step - exactly as the compound would be
+            # written as a path step outside the pseudo-class.
+            #
+            # 'implied' is the node test the candidate is already known
+            # to pass (see implied_name_test()); a 'self::' test of that
+            # same name is then always true, and is left out
+            argument <- self$argument_xpath(subselector)
+            if (!keep_node_test) {
+                argument$xpath$add_name_test()
+                if (!is.null(implied))
+                    argument$xpath$drop_name_test(implied)
+            }
+            argument_condition(argument)
+        },
+        argument_xpath = function(subselector) {
+            # The translated rightmost compound of a pseudo-class
+            # argument, as list(xpath, rev_test): 'rev_test' is the
+            # reversed combinator test for the rest of a complex
+            # argument, NULL for a compound. argument_condition()
+            # renders it; in between, a caller may fold the element
+            # name into the condition with xpath$add_name_test()
             if (first_class_name(subselector) == "CombinedSelector") {
                 sub_xpath <- self$xpath(subselector$subselector)
                 if (sub_xpath$scoped)
                     stop_non_leading_scope(sub_xpath$scope_pos)
-                sub_xpath$add_name_test()
                 rev_test <- self$reversed_combinator_test(
                     subselector$selector, subselector$combinator)
-                condition <-
-                    if (identical(sub_xpath$condition, "0")) {
-                        # A rightmost compound that can never match makes
-                        # the whole argument impossible; drop the
-                        # existence test, as add_condition() would
-                        "0"
-                    } else if (nzchar(sub_xpath$condition)) {
-                        cond <- sub_xpath$condition
-                        # The condition becomes one operand of an
-                        # "and", so a stored or-group needs its
-                        # parentheses now
-                        if (sub_xpath$condition_is_or)
-                            cond <- paste0("(", cond, ")")
-                        paste0(cond, " and ", rev_test)
-                    } else
-                        rev_test
-                list(condition = condition, is_or = FALSE)
+                list(xpath = sub_xpath, rev_test = rev_test)
             } else {
                 sub_xpath <- self$xpath(subselector)
                 if (sub_xpath$scoped)
                     stop_non_leading_scope(sub_xpath$scope_pos)
-                sub_xpath$add_name_test()
-                # An argument that imposes no condition (a bare '*')
-                # matches everything; return an explicit "true()" so
-                # callers can tell "always true" apart from "no
-                # condition" instead of silently dropping the argument
-                # from the selector list
-                if (nzchar(sub_xpath$condition))
-                    list(condition = sub_xpath$condition,
-                         is_or = sub_xpath$condition_is_or)
-                else
-                    list(condition = "true()", is_or = FALSE)
+                list(xpath = sub_xpath, rev_test = NULL)
             }
         },
-        selector_list_condition = function(selector_list) {
+        selector_list_condition = function(selector_list,
+                                           conditions = NULL,
+                                           implied = NULL) {
             # OR-join the conditions imposed by a selector list's
             # arguments into a single list(condition, is_or). NULL when
             # the list imposes no condition: either it is absent, or
             # one of its arguments (e.g. the universal selector '*') is
             # always true, making the whole list match unconditionally.
             # A single-argument list is an or-group only if that
-            # argument's own condition is one (e.g. a nested :is())
+            # argument's own condition is one (e.g. a nested :is()).
+            # 'conditions' passes in the arguments' conditions when the
+            # caller has already rendered them, and 'implied' is the
+            # node test of the candidate, for xpath_argument_condition()
             if (is.null(selector_list) || length(selector_list) == 0)
                 return(NULL)
-            conditions <- lapply(selector_list,
-                                 self$xpath_argument_condition)
+            if (is.null(conditions))
+                conditions <- lapply(selector_list,
+                                     self$xpath_argument_condition,
+                                     implied = implied)
             exprs <- vapply(conditions, `[[`, character(1), "condition")
             if (any(exprs == "true()"))
                 return(NULL)
@@ -1264,15 +1373,34 @@ GenericTranslator <- translator_class("GenericTranslator",
             # left-hand side of a combinator inside a pseudo-class
             # argument: ' ' -> an ancestor, '>' -> the parent, '~' -> any
             # preceding sibling, '+' -> the immediately preceding sibling.
-            # The left-hand side may itself be complex, so recurse
-            inner <- self$xpath_argument_condition(selector)$condition
+            # The left-hand side may itself be complex, so recurse.
+            #
+            # As in xpath_has_test(), the element name of that
+            # left-hand compound is the node test of the axis step
+            # ('preceding-sibling::span', not
+            # 'preceding-sibling::*[self::span]'): the step then means
+            # just what the compound means as a path step anywhere
+            # else, and libxml2 filters on a name test far faster than
+            # it evaluates a 'self::' predicate on every node of the
+            # axis. A name that cannot be a node test ('*|e', or one
+            # that needs quoting) has already been folded into the
+            # condition, leaving '*'. The exception is '+', where the
+            # position predicate [1] must come before the name test -
+            # the immediately preceding sibling, if it is an 'e' - and
+            # so the name has to move into the predicate after it
+            adjacent <- combinator == "+"
+            inner <- self$xpath_argument_condition(
+                selector, keep_node_test = !adjacent)
             axis <-
-                if (combinator == " ") "ancestor::*"
-                else if (combinator == ">") "parent::*"
-                else if (combinator == "~") "preceding-sibling::*"
-                else if (combinator == "+") "preceding-sibling::*[1]"
+                if (combinator == " ") "ancestor::"
+                else if (combinator == ">") "parent::"
+                else if (combinator %in% c("~", "+")) "preceding-sibling::"
                 else internal_stop("Unknown combinator '", combinator, "'")
-            if (inner == "true()") axis else paste0(axis, "[", inner, "]")
+            step <- paste0(axis, inner$node_test)
+            if (adjacent)
+                step <- paste0(step, "[1]")
+            if (inner$condition == "true()") step
+            else paste0(step, "[", inner$condition, "]")
         },
         xpath_negation = function(negation) {
             xpath <- self$xpath(negation$selector)
@@ -1301,8 +1429,11 @@ GenericTranslator <- translator_class("GenericTranslator",
             # Add the OR of the argument conditions (any match suffices)
             # as a single condition so the alternatives stay grouped and
             # AND with the rest of the compound selector; a list that
-            # matches everything (e.g. :is(a, *)) imposes no condition
-            condition <- self$selector_list_condition(matching$selector_list)
+            # matches everything (e.g. :is(a, *)) imposes no condition.
+            # The arguments test the candidate the compound has already
+            # named, so 'li:is(li)' needs no 'self::li'
+            condition <- self$selector_list_condition(
+                matching$selector_list, implied = implied_name_test(xpath))
             if (!is.null(condition)) {
                 xpath$add_condition(condition$condition, condition$is_or)
             }
@@ -1488,14 +1619,22 @@ GenericTranslator <- translator_class("GenericTranslator",
                         paste0("@", namespace, ":*[local-name() = ",
                                xpath_literal(name), "]")
             } else {
-                # An unprefixed attribute has no namespace, so name()
-                # is its local name and needs no pin of its own
+                # An unprefixed attribute selects one in no namespace,
+                # which is what an unprefixed XPath attribute test
+                # matches. A name that cannot be written as one is
+                # compared against name() instead, and name() returns
+                # the *qualified* name: an attribute 'b' in a namespace
+                # bound to prefix 'a' has name() 'a:b' too. Pin
+                # namespace-uri() alongside it, as for element names
+                # (see add_quoted_name_test()), so '[a\:b]' matches only
+                # an attribute in no namespace literally named 'a:b'
                 attrib <-
                     if (safe)
                         paste0("@", name)
                     else
                         paste0("attribute::*[name() = ",
-                               xpath_literal(name), "]")
+                               xpath_literal(name),
+                               " and namespace-uri() = '']")
             }
             value <- selector$value
 
@@ -1507,21 +1646,57 @@ GenericTranslator <- translator_class("GenericTranslator",
             # against the ASCII-lowercased value gets there. An empty
             # value needs no lowercasing, and skipping it keeps the
             # existence tests (e.g. 'not(@attr)') exact.
-            fold_value <- !is.null(value) && nzchar(value) &&
-                (identical(selector$flag, "i") ||
-                 (!identical(selector$flag, "s") &&
-                  self$case_insensitive_attribute_values &&
-                  is.null(selector$namespace) &&
-                  local_name %in% html_case_insensitive_attrs))
+            #
+            # HTML's rule covers only an attribute in no namespace, so
+            # under '[*|attr]' it holds for some of the matched
+            # attributes and not others: 'fold_no_namespace' marks that
+            # case, which folds per attribute below
+            has_value <- !is.null(value) && nzchar(value)
+            html_rule <- has_value && is.null(selector$flag) &&
+                self$case_insensitive_attribute_values &&
+                local_name %in% html_case_insensitive_attrs
+            fold_value <- (has_value && identical(selector$flag, "i")) ||
+                (html_rule && is.null(selector$namespace) &&
+                 !selector$any_namespace)
+            fold_no_namespace <- html_rule && selector$any_namespace
 
             xp <- self$xpath(selector$selector)
-            if (fold_value) {
-                value <- ascii_lower(value)
-                attrib <- xpath_ascii_lower(attrib)
-            }
             method <- self[[method_name]]
             if (is.null(method))
                 internal_stop("Unknown attribute operator '", operator, "'")
+            if (fold_value)
+                value <- ascii_lower(value)
+            # '[*|attr]' selects a node-set that can hold several
+            # attributes, one per namespace. XPath's '=' tests each of
+            # them, but a string function (starts-with(), translate(),
+            # ...) sees only the first, so any other value test is run
+            # once per attribute, in a predicate on the attribute step
+            #
+            # When only the attributes in no namespace fold, the test
+            # is "(namespace-uri() = '' and folded) or exact". The
+            # exact test needs no "namespace-uri() != ''" of its own:
+            # every operator's exact match implies its folded one, so
+            # for an attribute in no namespace the disjunction is the
+            # folded test alone
+            if (selector$any_namespace &&
+                (fold_value || fold_no_namespace ||
+                 !operator %in% c("exists", "equals"))) {
+                each <- if (fold_value) xpath_ascii_lower(".") else "."
+                test <- method(XPathExpr(), each, value)$condition
+                if (fold_no_namespace && !identical(test, "0")) {
+                    folded <- XPathExpr()
+                    folded$add_condition("namespace-uri() = ''")
+                    folded <- method(folded, xpath_ascii_lower("."),
+                                     ascii_lower(value))
+                    test <- paste0(folded$condition, " or ", test)
+                }
+                xp$add_condition(
+                    if (identical(test, "0")) "0"
+                    else paste0(attrib, "[", test, "]"))
+                return(xp)
+            }
+            if (fold_value)
+                attrib <- xpath_ascii_lower(attrib)
             method(xp, attrib, value)
         },
         # .foo is defined as [class~=foo] in the spec
@@ -1557,10 +1732,12 @@ GenericTranslator <- translator_class("GenericTranslator",
                 # '*|e': 'e' in any namespace, including none.  An
                 # unprefixed XPath name test only matches the null
                 # namespace, so test against local-name() instead.
+                # No 'name_test' is recorded: local-name() ignores the
+                # namespace, so it cannot count siblings of the same
+                # expanded name (see of_type_nodetest()).
                 condition <- paste0("local-name() = ", xpath_literal(element))
                 xpath <- XPathExpr()
                 xpath$add_condition(condition)
-                xpath$name_test <- paste0("*[", condition, "]")
                 xpath$local_name <- element
                 return(xpath)
             }
@@ -1712,7 +1889,8 @@ GenericTranslator <- translator_class("GenericTranslator",
             # there is always an "n" matching any number of siblings (maybe none)
             if (a == 1 && b_min_1 <= 0) {
                 # CSS Level 4: When selector list is provided, ensure current element matches
-                condition <- self$selector_list_condition(fn$selector_list)
+                condition <- self$selector_list_condition(
+                    fn$selector_list, implied = implied_name_test(xpath))
                 if (!is.null(condition)) {
                     xpath$add_condition(condition$condition, condition$is_or)
                 }
@@ -1753,10 +1931,51 @@ GenericTranslator <- translator_class("GenericTranslator",
             # Build the predicate for selector list filtering (CSS Level 4):
             # only siblings matching the list are counted; a list that
             # matches everything counts all siblings (no predicate)
-            selector_list_cond <- self$selector_list_condition(fn$selector_list)
-            selector_predicate <-
-                if (is.null(selector_list_cond)) ""
-                else paste0("[", selector_list_cond$condition, "]")
+            implied <- implied_name_test(xpath)
+            if (length(fn$selector_list) == 1) {
+                # A single selector S names its element in the node
+                # test of the sibling step where it can, as a
+                # reversed combinator test does: 'preceding-sibling::li'
+                # rather than 'preceding-sibling::*[self::li]', which
+                # selects the same siblings but which libxml2 evaluates
+                # far more slowly. The candidate's own test against S
+                # still needs the name in its condition, unless the
+                # compound already names it, so fold it in afterwards
+                # from the same translation
+                argument <- self$argument_xpath(fn$selector_list[[1]])
+                counted <- argument_condition(argument)
+                argument$xpath$add_name_test()
+                if (!is.null(implied))
+                    argument$xpath$drop_name_test(implied)
+                selector_list_cond <- self$selector_list_condition(
+                    fn$selector_list, list(argument_condition(argument)))
+                nodetest <- counted$node_test
+                selector_predicate <-
+                    if (counted$condition == "true()") ""
+                    else paste0("[", counted$condition, "]")
+            } else {
+                # A list has no single name to test, and the union of
+                # one step per selector would be slower still. The
+                # siblings are tested against the whole of each
+                # argument; the candidate, as above, without a name
+                # test its compound already makes
+                arguments <- lapply(fn$selector_list, self$argument_xpath)
+                for (argument in arguments)
+                    argument$xpath$add_name_test()
+                counted <- self$selector_list_condition(
+                    fn$selector_list, lapply(arguments, argument_condition))
+                selector_predicate <-
+                    if (is.null(counted)) ""
+                    else paste0("[", counted$condition, "]")
+                selector_list_cond <- counted
+                if (!is.null(implied)) {
+                    for (argument in arguments)
+                        argument$xpath$drop_name_test(implied)
+                    selector_list_cond <- self$selector_list_condition(
+                        fn$selector_list,
+                        lapply(arguments, argument_condition))
+                }
+            }
 
             # count siblings before or after the element. Comparisons
             # against the count are written positionally by
@@ -1859,18 +2078,17 @@ GenericTranslator <- translator_class("GenericTranslator",
         xpath_lang_function = function(xpath, fn) {
             lang_values <- lang_ranges(fn)
 
-            # Build conditions for each language range. Indices rather
-            # than the values themselves, so that a rejected range can
-            # be pointed at through the token it was read from
-            conditions <- vapply(seq_along(lang_values), function(i) {
-                value <- lang_values[i]
+            # The nearest xml:lang-bearing ancestor-or-self, whose
+            # value is the element's language (xml:lang="" resets it to
+            # unknown). The "xml" prefix is bound in every XPath
+            # context, so the attribute can be walked directly
+            ancestor <- "ancestor-or-self::*[@xml:lang][1]"
+
+            # Build conditions for each language range
+            conditions <- vapply(lang_values, function(value) {
                 # Wildcard * matches any element whose language is
                 # known, i.e. one that inherits a non-empty xml:lang
-                # from its nearest xml:lang-bearing ancestor-or-self
-                # (xml:lang="" resets the language to unknown). The
-                # "xml" prefix is bound in every XPath context, so the
-                # attribute can be walked directly
-                known <- "ancestor-or-self::*[@xml:lang][1][string-length(@xml:lang) > 0]"
+                known <- paste0(ancestor, "[string-length(@xml:lang) > 0]")
                 kind <- lang_range_kind(value)
                 if (kind == "any") {
                     known
@@ -1880,23 +2098,25 @@ GenericTranslator <- translator_class("GenericTranslator",
                     # negation of "any" above, not a literal xml:lang=""
                     # comparison (which lang() would otherwise produce)
                     paste0("not(", known, ")")
-                } else if (kind == "prefix") {
-                    # Wildcard suffix like "en-*" - match any language starting with prefix
-                    # Use XPath's lang() function which does prefix matching.
-                    # Strip the trailing "-*": lang('en') matches "en" and any
-                    # "en-..." tag, whereas lang('en-') would match nothing
-                    # because lang() only extends its argument at a '-' boundary.
-                    prefix <- sub("-?\\*$", "", value)
-                    paste0("lang(", xpath_literal(prefix), ")")
-                } else if (kind == "extended") {
-                    # A wildcard in non-trailing position (e.g. "*-CH"):
-                    # XPath 1.0's lang() cannot express RFC 4647 extended
-                    # filtering, and unlike the HTML translators there is
-                    # no lang-attribute to walk, so reject it
-                    stop_lang_interior_wildcard(value, fn$ranges[[i]]$pos)
+                } else if (kind == "extended" ||
+                           lang_range_multi_subtag(value)) {
+                    # A range naming more than one subtag ("en-US") or
+                    # with a non-trailing wildcard ("*-CH", "de-*-DE")
+                    # needs RFC 4647 extended filtering, which lang()'s
+                    # plain prefix test cannot express ("en-US" must
+                    # also match "en-Latn-US"). The nearest xml:lang is
+                    # matched directly instead, as the HTML translators
+                    # match their language attribute
+                    lang_extended_condition(value, ancestor,
+                                            xpath_ascii_lower("@xml:lang"))
                 } else {
-                    # Regular language tag
-                    paste0("lang(", xpath_literal(value), ")")
+                    # A single subtag, with or without a trailing
+                    # wildcard ("en", "en-*"): XPath's lang() is exactly
+                    # the prefix test needed, case-insensitive and
+                    # inherited. The "-*" is stripped, since lang() only
+                    # extends its argument at a '-' boundary and
+                    # lang('en-') would match nothing
+                    paste0("lang(", xpath_literal(sub("-\\*$", "", value)), ")")
                 }
             }, character(1), USE.NAMES = FALSE)
 
@@ -2289,7 +2509,9 @@ HTMLTranslator <- translator_class("HTMLTranslator",
                     # approximated from the nearest language-attributed
                     # ancestor. A single-subtag range needs no walk - the
                     # plain prefix test below is equivalent and cheaper
-                    lang_extended_html_condition(value, self$xhtml)
+                    lang_extended_condition(value,
+                                            lang_attr_ancestor(self$xhtml),
+                                            lang_attr_value_lc(self$xhtml))
                 } else {
                     # An exact tag ("en", "en-GB") or a trailing-wildcard
                     # prefix range ("en-*"), both of which match the

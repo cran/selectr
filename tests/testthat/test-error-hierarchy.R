@@ -48,7 +48,7 @@ test_that("a translation error points at the construct it refuses", {
     # ... and a :lang() argument, from the token that is wrong
     expect_equal(pos(":lang(en, )"), 11)
     expect_equal(pos(":lang(en-)"), 7)
-    expect_equal(pos(":lang(*-CH)"), 7)
+    expect_equal(pos(":lang(fr, en*)"), 11)
 
     # The two failures no single position describes stay unlocated: a
     # namespace prefix XPath cannot name, and an of-type pseudo-class
@@ -106,6 +106,20 @@ test_that("a selector nesting functional pseudo-classes too deeply is caught", {
     expect_equal(conditionMessage(e),
                 "selector nests functional pseudo-classes too deeply")
     expect_equal(e$selector, deeply_nested)
+})
+
+test_that("deep nesting is caught whichever stack overflows first", {
+    # At R's default limits, deep enough nesting can exhaust the node
+    # stack or the C stack before the expression limit; each must be
+    # reported the same way
+    for (depth in c(800, 3000)) {
+        deeply_nested <- paste0(strrep(":not(", depth), "a",
+                                strrep(")", depth))
+        e <- tryCatch(css_to_xpath(deeply_nested), error = identity)
+        expect_s3_class(e, "selectr_translation_error")
+        expect_equal(conditionMessage(e),
+                     "selector nests functional pseudo-classes too deeply")
+    }
 })
 
 test_that("selectr_argument_error is a structured condition", {

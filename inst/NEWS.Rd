@@ -2,6 +2,70 @@
 \title{NEWS file for the selectr package}
 \encoding{UTF-8}
 
+\section{Changes in version 0.8-1}{
+  \subsection{MINOR CHANGES}{
+    \itemize{
+
+      \item Complex selectors inside \code{:is()}, \code{:where()},
+      \code{:not()} and \code{of S} translate to faster XPath:
+      \code{:is(span ~ p)} now uses \code{preceding-sibling::span}
+      rather than \code{preceding-sibling::*[self::span]}, which
+      \pkg{libxml2} evaluates about ten times faster on long sibling
+      lists. The sibling count of \code{:nth-child(an+b of S)} and
+      \code{:nth-last-child()} now names the element of \code{S} in
+      the same way, and an exact position such as \code{3 of li} is
+      tested positionally. An argument naming the element its compound
+      already names no longer tests it again: \code{li:is(li)} is now
+      just \code{li}. The same elements match, but the generated XPath
+      text changes.
+
+    }
+  }
+  \subsection{BUG FIXES}{
+    \itemize{
+
+      \item An unclosed functional pseudo-class ending in whitespace,
+      such as \code{":not(a "}, is now closed at the end of the
+      selector instead of raising an error.
+
+      \item A comment now separates the tokens either side of it, as
+      CSS specifies, instead of joining them, so
+      \code{":nth-child(1/**/0)"} is an error rather than
+      \code{":nth-child(10)"}.
+
+      \item Very deep nesting of functional pseudo-classes now always
+      raises the \code{"selector nests functional pseudo-classes too
+      deeply"} error, never a bare \code{"node stack overflow"}.
+
+      \item An attribute selector in any namespace, such as
+      \code{"[*|lang^=en]"}, now matches when any attribute with that
+      local name matches, not only the first.
+
+      \item The HTML translator's \code{"[*|type=Foo]"} now ignores
+      case for a \code{type} attribute in no namespace, as
+      \code{"[type=Foo]"} does.
+
+      \item The generic translator's \code{:lang()} now uses RFC 4647
+      extended filtering, as the HTML translator does, so
+      \code{":lang(en-US)"} matches \code{"en-Latn-US"} and
+      \code{":lang(*-CH)"} is no longer an error. Every translator now
+      stops at a singleton subtag, so \code{":lang(de-DE)"} no longer
+      matches \code{"de-x-DE"}.
+
+      \item \code{"*|e:first-of-type"} and the other of-type
+      pseudo-classes on \code{*|e} now raise a \code{"not implemented"}
+      error instead of counting \code{e} in other namespaces as the
+      same type.
+
+      \item An escaped colon in an attribute name, as in
+      \code{"[a\\:b]"}, now matches only an attribute in no namespace,
+      not \code{b} in a namespace bound to \code{a}. For
+      \code{xml:lang} in XML documents, use \code{"[xml|lang]"}.
+
+    }
+  }
+}
+
 \section{Changes in version 0.8-0}{
   \subsection{MINOR CHANGES}{
     \itemize{

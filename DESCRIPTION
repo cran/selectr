@@ -1,7 +1,7 @@
 Package: selectr
 Type: Package
 Title: Translate CSS Selectors to XPath Expressions
-Version: 0.8-0
+Version: 0.8-1
 Authors@R: c(person("Simon", "Potter",
                     role = c("aut", "trl", "cre"),
                     email = "simon@sjp.co.nz"),
@@ -23,10 +23,10 @@ Description: Translates a CSS selector into an equivalent XPath
   originally a port of the Python package 'cssselect'
   (<https://cssselect.readthedocs.io/>).
 NeedsCompilation: no
-Packaged: 2026-09-27 06:18:23 UTC; vscode
+Packaged: 2026-11-26 21:32:30 UTC; vscode
 Author: Simon Potter [aut, trl, cre],
   Simon Sapin [aut],
   Ian Bicking [aut]
 Maintainer: Simon Potter <simon@sjp.co.nz>
 Repository: CRAN
-Date/Publication: 2026-09-27 06:50:02 UTC
+Date/Publication: 2026-11-26 23:40:02 UTC

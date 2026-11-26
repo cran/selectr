@@ -40,11 +40,14 @@
     \code{#id} \tab ID \tab \code{descendant-or-self::*[@id = 'id']} \cr
   }
 
-  Class matching splits \code{@class} on XML whitespace
-  (space/tab/CR/LF) via \code{normalize-space()}; HTML's own
-  "set of space-separated tokens" also treats U+000C form feed as a
-  separator, which this does not - negligible in practice, since form
-  feed in a \code{class} attribute is vanishingly rare.
+  Class matching, like \code{[attr~=val]}, splits the value on XML
+  whitespace (space/tab/CR/LF) via \code{normalize-space()}. HTML also
+  treats U+000C form feed as a separator, so a browser gives
+  \code{class="a<FF>b"} the classes \code{a} and \code{b}, but
+  \code{.a} does not match it here: XPath 1.0, as \pkg{libxml2}
+  implements it, cannot express that character. This only affects HTML
+  parsed with \code{read_html()} or \code{htmlParse()}, since form feed
+  cannot appear in XML.
 }
 \section{Attribute selectors}{
   \tabular{lll}{
@@ -115,7 +118,7 @@
 \section{Linguistic and directionality pseudo-classes}{
   \tabular{lll}{
     \bold{Selector} \tab \bold{Status} \tab \bold{Notes} \cr
-    \code{:lang(range)} \tab supported, translator-dependent \tab generic: XPath \code{lang()}, prefix match only. \code{html}/\code{xhtml}: RFC 4647 extended filtering for multi-subtag ranges (subtags may be skipped between the ones named, but a leading \code{*} consumes the tag's primary subtag, so \code{:lang(*-CH)} does not match \code{lang="ch-DE"}). Every translator rejects a range that is not an RFC 4647 extended language range (\code{:lang(en-)}, \code{:lang(en*)}); see \code{\link{css_to_xpath}} for the full rules \cr
+    \code{:lang(range)} \tab supported, every translator \tab RFC 4647 extended filtering for multi-subtag ranges, from \code{xml:lang} (generic), \code{lang} (\code{html}) or either (\code{xhtml}) (subtags may be skipped between the ones named, but a leading \code{*} consumes the tag's primary subtag, so \code{:lang(*-CH)} does not match \code{lang="ch-DE"}). Every translator rejects a range that is not an RFC 4647 extended language range (\code{:lang(en-)}, \code{:lang(en*)}); see \code{\link{css_to_xpath}} for the full rules \cr
     \code{:lang("")} \tab supported, every translator \tab matches an element with no content language anywhere in its ancestor-or-self chain \cr
     \code{:dir()} \tab never matches, every translator \tab \code{descendant-or-self::*[0]}; directionality needs a live DOM (\code{dir="auto"}, \code{bdi}, form controls) \cr
   }

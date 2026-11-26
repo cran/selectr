@@ -7,9 +7,7 @@ escape <- paste0("\\\\[0-9a-fA-F]{1,6}(?:\r\n|[ \n\r\t\f])?",
                  "|\\\\\\z")
 nonascii <- "[^\1-\177]"
 
-TokenMacros <- list(escape = escape,
-                    string_escape = paste0("\\\\(?:\n|\r\n|\r|\f)|", escape),
-                    nonascii = nonascii)
+string_escape <- paste0("\\\\(?:\n|\r\n|\r|\f)|", escape)
 
 #### Parse tree
 
@@ -644,7 +642,11 @@ parse_simple_selector <- function(stream, inside_arguments = FALSE,
                 reject_functional_pseudo_element(ident, name_pos, stream)
                 next
             }
-            if (!token_equality(stream$peek(), "DELIM", "(")) {
+            # A function token is its name and '(' written together, so
+            # a comment between the two leaves a bare pseudo-class
+            # followed by a stray '('
+            if (!token_equality(stream$peek(), "DELIM", "(") ||
+                isTRUE(stream$peek()$after_comment)) {
                 result <- Pseudo(result, ident, peek$pos)
                 next
             }
@@ -710,6 +712,24 @@ parse_simple_selector <- function(stream, inside_arguments = FALSE,
 
                 while (TRUE) {
                     nt <- stream$nxt()
+                    # A comment separates arguments as whitespace does,
+                    # so the tokens either side are not read as one: a
+                    # :lang() range does not continue across it, and
+                    # An+B sees a whitespace token. The exception is
+                    # '+' then 'n', where An+B forbids whitespace but
+                    # a comment leaves the two tokens adjacent.
+                    if (isTRUE(nt$after_comment)) {
+                        ws_since_arg <- TRUE
+                        if (startsWith(lident, "nth-") && i > 1) {
+                            last <- arguments[[i - 1]]
+                            if (last$type != "S" &&
+                                !(token_equality(last, "DELIM", "+") &&
+                                  nt$type == "IDENT")) {
+                                arguments[[i]] <- Token("S", " ", nt$pos)
+                                i <- i + 1
+                            }
+                        }
+                    }
                     if (nt$type %in% c("IDENT", "STRING", "NUMBER",
                                        "DIMENSION") ||
                         (token_equality(nt, "DELIM", "+") ||
@@ -889,7 +909,7 @@ parse_simple_selector_arguments <- function(stream, function_name = NULL, # noli
             if (peek$type == "S") {
                 stream$skip_whitespace()
                 peek <- stream$peek()
-                if (token_is_delim(peek, c(")", ","))) {
+                if (token_is_delim(peek, c(")", ",")) || peek$type == "EOF") {
                     break
                 }
                 if (token_is_delim(peek, c("+", ">", "~"))) {
@@ -1247,22 +1267,11 @@ parse_series <- function(tokens) {
     else if (s == "n")
         return(1:0)
     n_pos <- regexpr("n", s, fixed = TRUE)
-    if (n_pos == -1L) {
-        result <- str_int(s)
-        if (is.na(result)) {
-            return(NULL)
-        } else {
-            return(c(0L, result))
-        }
-    }
+    if (n_pos == -1L)
+        return(c(0L, str_int(s)))
     # Split at the first 'n' only
-    a <- trimws(substring(s, 1, n_pos - 1))
-    b <- trimws(substring(s, n_pos + 1))
-
-    intb <- str_int(b)
-    if (!nzchar(a) && is.na(intb))
-        return(NULL)
-
+    a <- substring(s, 1, n_pos - 1)
+    b <- substring(s, n_pos + 1)
     if (!nzchar(a))
         a <- 1L
     else if (a == "-" || a == "+")
@@ -1393,9 +1402,6 @@ token_is_delim <- function(token, values) {
     token$type == "DELIM" && token$value %in% values
 }
 
-delims_2ch <- c("~=", "|=", "^=", "$=", "*=", "::")
-delims_1ch <- c(">", "+", "-", "~", ",", ".", "*", "=", "[", "]", "(", ")", "|", ":", "#")
-
 # A name character, one escape sequence counting as one character. The
 # escape alternative covers both unicode escapes (e.g. '\31 ') and
 # simple escapes of any non-hex character, which includes all delimiters
@@ -1409,7 +1415,7 @@ ident_start_re <- paste0("^", ident_start)
 # String content: any character except a newline, backslash, or the
 # quote character, or an escape sequence.
 string_content <- function(quote) {
-    paste0("(?:[^\n\r\f\\\\", quote, "]++|", TokenMacros$string_escape, ")*+")
+    paste0("(?:[^\n\r\f\\\\", quote, "]++|", string_escape, ")*+")
 }
 
 # The whole token grammar as one alternation, which tokenize() runs over
@@ -1552,11 +1558,15 @@ tokenize <- function(s) {
     results <- vector("list", n + 1L)
     i <- 1L
     prev_type <- ""
+    after_comment <- FALSE
     for (k in seq_len(n)) {
         type <- types[k]
         pos <- positions[k]
         token <- switch(type,
             S = {
+                # Whitespace separates tokens on its own, so a comment
+                # next to it needs no marking
+                after_comment <- FALSE
                 # A comment between two whitespace runs (or two adjacent
                 # comments) leaves no token behind, so this run may be
                 # the second one seen in a row. Keep the first instead
@@ -1607,12 +1617,24 @@ tokenize <- function(s) {
                                      newlines = TRUE),
                       pos)
             },
-            COMMENT = next,
+            # A comment leaves no token, but it still separates the
+            # tokens either side of it: a comment-separated '1' and '0'
+            # are two numbers, not 10. Flag the next token so that the
+            # parser can tell it from one written straight after the
+            # previous token.
+            COMMENT = {
+                after_comment <- TRUE
+                next
+            },
             BAD = parse_stop("Unexpected character '",
                              slice(starts[k], 1L), "'",
                              pos = pos),
             # CDC, CDO and DELIM are their own source text
             Token(type, slice(starts[k], ends[k] - starts[k] + 1L), pos))
+        if (after_comment) {
+            token$after_comment <- TRUE
+            after_comment <- FALSE
+        }
         results[[i]] <- token
         i <- i + 1L
         prev_type <- type
